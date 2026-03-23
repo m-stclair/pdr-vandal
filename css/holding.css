@@ -1,0 +1,218 @@
+
+/*.foldout-toggle {*/
+/*  background: none;*/
+/*  border: none;*/
+/*  color: #888;*/
+/*  cursor: pointer;*/
+/*  font-size: 0.85rem;*/
+/*}*/
+
+/*.field label {*/
+/*    margin-bottom: 0;*/
+/*    line-height: 1.1;*/
+/*    padding-left: 0.1em;*/
+/*    font-size: 0.85em;*/
+/*    color: #ccc;*/
+/*    font-weight: 500;*/
+/*    letter-spacing: 0.03em;*/
+/*}*/
+
+/*.field select {*/
+/*    background-color: #1e1e1e;*/
+/*    color: #eee;*/
+/*    border: 1px solid #666;*/
+/*    border-radius: 4px;*/
+/*    padding: 0.4em 1.5em 0.4em 0.5em;*/
+/*    margin-left: 0.6em;*/
+/*    font-size: 0.9em;*/
+/*    line-height: 1.4;*/
+/*    height: auto;*/
+/*    box-sizing: border-box;*/
+
+/*    !* Fix arrow *!*/
+/*    appearance: none;*/
+/*    background-image: url("data:image/svg+xml,%3Csvg fill='white' viewBox='0 0 20 20'%3E%3Cpath d='M7 7l3 3 3-3'%3E%3C/path%3E%3C/svg%3E");*/
+/*    background-repeat: no-repeat;*/
+/*    background-position: right 0.5em center;*/
+/*    background-size: 0.65em auto;*/
+/*}*/
+
+/*.field select:focus {*/
+/*    outline: none;*/
+/*    border-color: #aaa;*/
+/*    background-color: #2a2a2a;*/
+/*}*/
+
+/*.field {*/
+/*    margin-bottom: 1em;*/
+/*    display: flex;*/
+/*    flex-direction: column;*/
+/*    gap: 0.2em;*/
+/*}*/
+
+/*.checkbox-label {*/
+/*    display: flex;*/
+/*    align-items: center;*/
+/*    gap: 0.5em;*/
+/*    white-space: nowrap;*/
+/*}*/
+
+/*button {*/
+/*    margin-left: 0.3em;*/
+/*}*/
+
+/*.ui-field {*/
+/*  margin-bottom: 1.2em; !* space between controls *!*/
+/*}*/
+
+/*.slider-row {*/
+/*    display: flex;*/
+/*    align-items: center;*/
+/*    gap: 0.5em;*/
+/*    margin-bottom: 0.2em*/
+/*}*/
+
+/*.slider-row.has-animation-foldout {*/
+/*    margin-bottom: 0.1em*/
+/*}*/
+
+/*.slider {*/
+/*    flex: 1;*/
+/*}*/
+
+/*.slider-value {*/
+/*    display: inline-block;*/
+/*    font-family: monospace;*/
+/*    min-width: 5ch;*/
+/*    text-align: right;*/
+/*    font-size: 1em;*/
+/*    color: #aaa;*/
+/*}*/
+
+/*.foldout-toggle {*/
+/*  background: none;*/
+/*  color: #fff;*/
+/*  border: none;*/
+/*  font: inherit;*/
+/*  cursor: pointer;*/
+/*  padding: 2px 4px;*/
+/*  font-size: 1.2em;*/
+/*  margin-bottom: 0.8em;*/
+/*}*/
+
+/*.animation-toggle .foldout-toggle {*/
+/*    font-size: 0.75em;*/
+/*    margin-bottom: 0.2em;*/
+/*}*/
+
+/*.foldout-toggle:hover {*/
+/*  background: rgba(255,255,255,0.1);*/
+/*}*/
+
+/*.mod-foldout {*/
+/*  margin-top: 0;             !* remove space before *!*/
+/*  margin-bottom: 0.6em;      !* space after to separate next control *!*/
+/*  padding-left: 1em;*/
+/*  border-left: 2px solid #8884;*/
+/*  font-size: 0.9em;*/
+/*}*/
+
+/*.mod-subfield {*/
+/*  display: flex;*/
+/*  align-items: center;*/
+/*  justify-content: space-between;*/
+/*  margin: 0.25em 0;*/
+/*  gap: 0.5em;*/
+/*}*/
+
+/*.mod-subfield input[type=\"range\"] {*/
+/*  flex: 1;*/
+/*}*/
+
+/*.mod-subfield select {*/
+/*  flex: 1;*/
+/*  max-width: 10em;*/
+/*}*/
+
+/*.mod-subfield > span,*/
+/*.mod-subfield > label {*/
+/*  min-width: 4em;*/
+/*  text-align: right;*/
+/*}*/
+
+/*.sub-slider-container {*/
+/*  display: flex;*/
+/*  align-items: center;*/
+/*  gap: 0.5em;*/
+/*  margin-top: 0.25em;*/
+/*}*/
+
+/*.sub-slider-container span {*/
+/*  min-width: 3.5em;*/
+/*  text-align: right;*/
+/*  opacity: 0.8;*/
+/*}*/
+
+
+/*input[type="file"] {*/
+/*    background: #333;*/
+/*    color: white;*/
+/*    padding: 0.4em 1em;*/
+/*    border: 1px solid #555;*/
+/*    border-radius: 4px;*/
+/*    cursor: pointer;*/
+/*}*/
+
+/*input[type=range], select {*/
+/*    height: 1.5em;*/
+/*    font-size: 0.9em;*/
+/*    border-radius: 4px;*/
+/*    border: none;*/
+/*    padding: 0.2em;*/
+/*}*/
+
+/*input[type=range]::-webkit-slider-thumb {*/
+/*    height: 12px;*/
+/*    width: 12px;*/
+/*}*/
+
+/*input[type=range]::-moz-range-thumb {*/
+/*    height: 12px;*/
+/*    width: 12px;*/
+/*}*/
+
+/*!* Scrollbar styling for Webkit browsers (Chrome, Safari, Edge) *!*/
+/*::-webkit-scrollbar {*/
+/*  width: 10px;  !* Width of the vertical scrollbar *!*/
+/*  height: 10px; !* Height of the horizontal scrollbar *!*/
+/*}*/
+
+/*::-webkit-scrollbar-track {*/
+/*  background: #333; !* Dark background to match the theme *!*/
+/*  border-radius: 10px; !* Rounded corners *!*/
+/*}*/
+
+/*::-webkit-scrollbar-thumb {*/
+/*  background: #555; !* Dark thumb color *!*/
+/*  border-radius: 10px;*/
+/*  border: 2px solid #333; !* Border between thumb and track *!*/
+/*}*/
+
+/*::-webkit-scrollbar-thumb:hover {*/
+/*  background: #777; !* Lighter thumb color on hover *!*/
+/*}*/
+
+/*label {*/
+/*    margin: 0 0.5em;*/
+/*}*/
+
+
+/*.effect-card {*/
+/*    margin-top: 0.1em;*/
+/*}*/
+
+/*.effect-header {*/
+/*  background: #444;*/
+/*  border-bottom: 1px solid #444;*/
+/*  padding: 0.3em 0.5em;*/
+/*}*/

@@ -1,0 +1,20 @@
+{
+  "name": "PDR Vandal",
+  "short_name": "PDR Vandal",
+  "start_url": "/pdr",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    {
+      "src": "favicon.ico",
+      "sizes": "114x114",
+      "type": "image/png"
+    },
+    {
+      "src": "big_icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png"
+    }
+  ]
+}
