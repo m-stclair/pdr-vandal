@@ -116,8 +116,7 @@ async function handlePdrBandSelect() {
         inputStretchEffect.auxiliaryCache.p98 = arrayData.p98;
         resizeAndRedraw();
     } catch (err) {
-        console.error(err)
-        // TODO: some behavior about showing the load error
+        showPDRErrorModal(err);
     }
 }
 
