@@ -240,10 +240,11 @@ def populate_registry_entry(entry: RegistryEntry):
 # TODO: right now, this unconditionally clears all previous entries from the
 #  cache. We probably want to be smarter about this. But our memory is very
 #  limited.
-def clear_cache(path):
+def clear_cache(path, cache=PIXEL_CACHE):
     for p in tuple(DATA_REGISTRY.keys()):
         if p != path:
             del DATA_REGISTRY[p]
+    cache.evict_path(path)
 
 
 @dataclasses.dataclass
