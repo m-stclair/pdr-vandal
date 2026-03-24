@@ -1,6 +1,6 @@
 import dataclasses
 import json
-from typing import Literal
+from typing import Literal, OrderedDict
 
 import multidict
 import numpy as np
@@ -13,6 +13,50 @@ def to_js_unproxied(*args, **kwargs):
 
 
 @dataclasses.dataclass
+class PixelCache:
+    # TODO, maybe: this should probably work on actual in-memory size,
+    #  not pixel count
+    max_bytes: int
+    _cache: OrderedDict[tuple, np.ndarray] = dataclasses.field(
+        default_factory=OrderedDict
+    )
+    _total: int = 0
+
+    def get(self, key):
+        if key not in self._cache:
+            return None
+        self._cache.move_to_end(key)
+        return self._cache[key]
+
+    def put(self, key, arr: np.ndarray):
+        if arr.nbytes > self.max_bytes:
+            return False
+        if key in self._cache:
+            self._total -= self._cache[key].nbytes
+            del self._cache[key]
+        self._cache[key] = arr
+        self._total += arr.nbytes
+        self._evict()
+        return True
+
+    def evict_path(self, path: str):
+        for key in [k for k in self._cache if k[0] == path]:
+            self._total -= self._cache.pop(key).nbytes
+
+    def _evict(self):
+        while self._total > self.max_bytes and self._cache:
+            _, arr = self._cache.popitem(last=False)
+            self._total -= arr.nbytes
+
+
+PIXEL_CACHE = PixelCache(max_bytes=2 * 1024 ** 3)
+
+# (path, objname, band) for scaled pixel arrays
+# (path, objname, None) for masked arrays
+CacheKey = tuple[str, str, int | str | None]
+
+
+@dataclasses.dataclass
 class ArrayInfo:
     width: int
     height: int
@@ -22,10 +66,10 @@ class ArrayInfo:
 
 @dataclasses.dataclass
 class BandPixels:
-    pixels: np.ndarray  # always 0-1 f32
     # currently, should always be 1 or 3. if 1, we expect pixels to just be
-    # the raveled array. if 3, we expect it to be a contiguous BIP
-    # [r, g, b, r, g, b] array.
+    # the raveled array. if 3, we expect them to be a contiguous BIP
+    # [r, g, b, r, g, b] array. these are intended to be friendly for
+    # WebGL r32f and rgb32f respectively.
     channels: int
     scale: float
     offset: float
@@ -41,8 +85,7 @@ class BandPixels:
 class ArrayObject:
     band_pixels: dict[str | int, BandPixels]
     info: ArrayInfo
-    # MaskedArray with nonfinite values & special constants masked
-    masked: np.ndarray | None = None
+    name: str
 
 
 @dataclasses.dataclass
@@ -126,8 +169,13 @@ def init_array_object(data: pdr.Data, objname: str) -> ArrayObject | None:
             ReadCompressedImage, ReadImage, ReadFits
         )
         from pdr.loaders.dispatch import pointer_to_loader
-
-        loader = pointer_to_loader(objname, data)
+        try:
+            loader = pointer_to_loader(objname, data)
+        except (AttributeError, ValueError):
+            # TODO: this is hitting a case where PDR incorrectly thinks a
+            #  detached ENVI header might be a FITS header and seizes up.
+            #  this should be fixed upstream.
+            loader = None
         if not isinstance(loader, (ReadImage, ReadFits, ReadCompressedImage)):
             return None
 
@@ -140,8 +188,8 @@ def init_array_object(data: pdr.Data, objname: str) -> ArrayObject | None:
         if block is None:
             dims, ok = _just_load_and_check_array_shape(data, objname)
         else:
-            dims['width'] = block.get('LINES')
-            dims['height'] = block.get('LINE_SAMPLES')
+            dims['height'] = block.get('LINES')
+            dims['width'] = block.get('LINE_SAMPLES')
             dims['bands'] = block.get('BANDS', 1)
         if any(d is None for d in dims.values()):
             dims, ok = _just_load_and_check_array_shape(data, objname)
@@ -176,7 +224,7 @@ def init_array_object(data: pdr.Data, objname: str) -> ArrayObject | None:
     else:
         meta = block
     info = ArrayInfo(json_meta=to_json_safe(meta), **dims)
-    return ArrayObject(info=info, band_pixels={})
+    return ArrayObject(info=info, band_pixels={}, name=objname)
 
 
 def populate_registry_entry(entry: RegistryEntry):
@@ -239,12 +287,14 @@ def _compute_stats(pixels: np.ndarray) -> dict:
     }
 
 
-def _scale_and_set(
+def _scale_and_cache(
+    entry: RegistryEntry,
     obj: ArrayObject,
     band: int | Literal["RGB"],
     pixels: np.ndarray,
-    raw_stats: dict
-) -> BandPixels:
+    raw_stats: dict,
+    cache: PixelCache = PIXEL_CACHE
+) -> tuple[BandPixels, np.ndarray]:
     if not isinstance(band, int):
         if not pixels.ndim == 3 and pixels.shape[0] == 3:
             raise ValueError("Must be a 3-band BSQ array")
@@ -268,9 +318,12 @@ def _scale_and_set(
         scaled = scaled.ravel()
         channels = 1
 
+    band_key = (entry.data.filename, obj.name, band)
+    cache.put(band_key, scaled)
+
     bandpixels = BandPixels(
-        pixels=scaled,
-        scale=scale, offset=offset,
+        scale=scale,
+        offset=offset,
         mean=rescale(raw_stats['mean']),
         std=raw_stats['std'] / scale,
         p02=rescale(raw_stats['p02']),
@@ -278,48 +331,87 @@ def _scale_and_set(
         channels=channels
     )
     obj.band_pixels[band] = bandpixels
-    return bandpixels
+    return bandpixels, scaled
 
 
-def _get_set_grayscale(obj: ArrayObject, band: int) -> BandPixels:
-    if (bandpixels := obj.band_pixels.get(band)) is not None:
-        return bandpixels
+def _get_or_reload_masked(
+    entry: RegistryEntry, objname: str, cache: PixelCache
+) -> np.ndarray:
+    key = (entry.data.filename, objname, None)
+    if (masked := cache.get(key)) is not None:
+        return masked
+    masked = prep_masked_array(entry.data, objname)
+    cache.put(key, masked)
+    return masked
+
+
+def _resolve_band(obj: ArrayObject, band: int | str | None) -> int | Literal["RGB"]:
+    """Normalize whatever the caller passed into a canonical cache key."""
     if obj.info.bands == 1:
-        band = 0
-        arr = obj.masked
-    else:
-        arr = obj.masked[band]
-    raw_stats = _compute_stats(arr)
-    return _scale_and_set(obj, band, arr, raw_stats)
+        return 0
+    if not isinstance(band, int) and obj.info.bands in (3, 4):
+        return "RGB"
+    if not isinstance(band, int):
+        return obj.info.bands // 2
+    return band
+
+
+def _arr_for_band(
+    masked: np.ndarray, band: int | Literal["RGB"], obj: ArrayObject
+) -> np.ndarray:
+    if not isinstance(band, int):
+        return masked[:3]
+    return masked if obj.info.bands == 1 else masked[band]
+
+
+def _rescale_and_cache(
+    entry: RegistryEntry,
+    obj: ArrayObject,
+    band: int | Literal["RGB"],
+    arr: np.ndarray,
+    bandpixels: BandPixels,
+    cache: PixelCache = PIXEL_CACHE,
+) -> tuple[BandPixels, np.ndarray]:
+    """Pixel array was evicted but metadata survives; skip stat recomputation."""
+    scaled = ((arr - bandpixels.offset) / bandpixels.scale).astype('f4')
+    if isinstance(scaled, np.ma.MaskedArray):
+        scaled[scaled.mask] = np.nan
+        scaled = scaled.data
+    scaled = bsq_to_bip_1d(scaled) if not isinstance(band, int) else scaled.ravel()
+    cache.put((entry.data.filename, obj.name, band), scaled)
+    return bandpixels, scaled
 
 
 def get_scaled_rgba_bip(
-    result: LoadResult, objname: str, band: str | int | None = None
-) -> BandPixels:
+    result: LoadResult,
+    objname: str,
+    band: str | int | None = None,
+    cache: PixelCache = PIXEL_CACHE,
+) -> tuple[BandPixels, np.ndarray]:
     entry = result.entry
     if objname not in entry.objects:
         raise ValueError(f"no array named {objname} in {entry.data.filename}")
     obj = entry.objects[objname]
     if isinstance(obj, DummyObject):
         raise TypeError(f"{objname} is not an array")
-    if obj.masked is None:
-        masked = prep_masked_array(entry.data, objname)
-        obj.masked = masked
-    # 2D array case (always grayscale)
-    if obj.info.bands == 1:
-        return _get_set_grayscale(obj, 0)
-    # default RGB case
-    # TODO: implement arbitrary 3-band mapping
-    if not isinstance(band, int) and obj.info.bands in (3, 4):
-        if (pixels := obj.band_pixels.get("RGB")) is not None:
-            return pixels
-        arr = obj.masked[:3]
-        raw_stats = _compute_stats(arr)
-        return _scale_and_set(obj, "RGB", arr, raw_stats)
-    # single-band selection from multiband array case
-    if not isinstance(band, int):
-        band = obj.info.bands // 2
-    return _get_set_grayscale(obj, band)
+
+    band = _resolve_band(obj, band)
+    band_key = (entry.data.filename, obj.name, band)
+    bandpixels = obj.band_pixels.get(band)
+    cached_pixels = cache.get(band_key)
+
+    if bandpixels is not None and cached_pixels is not None:
+        return bandpixels, cached_pixels
+
+    masked = _get_or_reload_masked(entry, objname, cache)
+    arr = _arr_for_band(masked, band, obj)
+
+    if bandpixels is not None:
+        # stats are alive on bandpixels, pixels were just evicted
+        return _rescale_and_cache(entry, obj, band, arr, bandpixels, cache)
+
+    raw_stats = _compute_stats(arr)
+    return _scale_and_cache(entry, obj, band, arr, raw_stats, cache)
 
 
 def to_json_safe(meta: dict | multidict.MultiDict):
@@ -354,19 +446,19 @@ def get_array_objnames(data: pdr.Data) -> list[str]:
 
 
 def get_array_image(
-        path: str,
-        objname: str | None = None,
-        band: str | int | None = None
+    path: str,
+    objname: str | None = None,
+    band: str | int | None = None
 ):
     try:
         result = load_if_required(path)
         if not result.ok:
             raise ValueError(f"Failed to load {path}: {result.error}")
-        bandpixels = get_scaled_rgba_bip(result, objname, band)
+        bandpixels, arr = get_scaled_rgba_bip(result, objname, band)
         info = result.entry.objects[objname].info
         return to_js_unproxied({
             "ok": True,
-            "pixels": bandpixels.pixels,
+            "pixels": arr,
             "scale": float(bandpixels.scale),
             "offset": float(bandpixels.offset),
             "width": int(info.width),
