@@ -109,7 +109,7 @@ async function handlePdrBandSelect() {
             return;
         }
 
-        renderer.setFloatRGBA32Source(arrayData.pixels, arrayData.width, arrayData.height);
+        renderer.setFloat32Source(arrayData.pixels, arrayData.width, arrayData.height, arrayData.channels);
         inputStretchEffect.auxiliaryCache.mean = arrayData.mean;
         inputStretchEffect.auxiliaryCache.std = arrayData.std;
         inputStretchEffect.auxiliaryCache.p02 = arrayData.p02;
@@ -134,6 +134,7 @@ async function handlePdrObjectChange() {
         showPDRErrorModal(
             `Array too large for this browser (max dimension is ${maxDimension}).`
         )
+        return;
     }
     imageBandSelect.options.length = 0;
     if (objInfo['bands'] === 3 || objInfo['bands'] === 4) {
@@ -262,7 +263,7 @@ async function handlePdrUpload(e) {
         console.error(e);
         pdrLoadingModal.style.display = "none";
         showPDRErrorModal(e);
-        if (pyodide) {
+        if (pyodide && e.target) {
             for (const f of e.target.files) {
                 pyodide.FS.unlink(f.name);
             }
@@ -313,21 +314,6 @@ export function isModulating(fx) {
         && p.mod?.type !== "none"
         && (!(p instanceof Array))
     )
-}
-
-function maybeCallStyleHook(fx) {
-    if (!fx.styleHook || fx.disabled) {
-        return false;
-    }
-    return fx.styleHook(fx);
-}
-
-function updateVisualStyles(cvs = canvas) {
-    const filters = getActiveEffects()
-        .map(fx => maybeCallStyleHook(fx))
-        .filter(Boolean)
-        .join(' ');
-    setFilters(filters || 'none', cvs);
 }
 
 

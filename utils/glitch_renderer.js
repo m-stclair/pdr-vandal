@@ -147,13 +147,10 @@ export class GlitchRenderer {
         this.inputDirty = true;
     }
 
-    setFloatRGBA32Source(f32Array, width, height, scale = 1, offset = 0) {
+    setFloat32Source(f32Array, width, height, channels) {
         this.source = {
-            kind: "rgba32f",
-            width,
+            kind: channels === 1 ? "r32f" : "rgb32f",            width,
             height,
-            scale,
-            offset,
             image: null,
             data: f32Array,
         };

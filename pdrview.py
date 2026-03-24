@@ -21,7 +21,11 @@ class ArrayInfo:
 
 @dataclasses.dataclass
 class BandPixels:
-    pixels: np.ndarray  # always 0-1 f32 padded to RGBA BIP
+    pixels: np.ndarray  # always 0-1 f32
+    # currently, should always be 1 or 3. if 1, we expect pixels to just be
+    # the raveled array. if 3, we expect it to be a contiguous BIP
+    # [r, g, b, r, g, b] array.
+    channels: int
     scale: float
     offset: float
     # these statistics are all also scaled/offset to the 0-1 array
@@ -141,6 +145,11 @@ def _compute_stats(pixels: np.ndarray) -> dict:
 
 
 def _scale_and_set(obj, band, pixels, raw_stats) -> BandPixels:
+    if not isinstance(band, int):
+        if not pixels.ndim == 3 and pixels.shape[0] == 3:
+            raise ValueError("Must be a 3-band BSQ array")
+    elif band.ndim != 2:
+        raise ValueError("Must be a 2-D array")
     offset = np.nanmin(pixels)
     scale = np.nanmax(pixels) - offset
     scaled = ((pixels - offset) / scale).astype('f4')
@@ -152,14 +161,20 @@ def _scale_and_set(obj, band, pixels, raw_stats) -> BandPixels:
     def rescale(v):
         return (v - offset) / scale
 
-    padded = to_rgba_bip_1d(scaled)
+    if not isinstance(band, int):
+        scaled = bsq_to_bip_1d(scaled)
+        channels = 3
+    else:
+        channels = 1
+
     bandpixels = BandPixels(
-        pixels=padded,
+        pixels=scaled,
         scale=scale, offset=offset,
         mean=rescale(raw_stats['mean']),
         std=raw_stats['std'] / scale,
         p02=rescale(raw_stats['p02']),
         p98=rescale(raw_stats['p98']),
+        channels=channels
     )
     obj.band_pixels[band] = bandpixels
     return bandpixels
@@ -191,8 +206,6 @@ def get_scaled_rgba_bip(
         raise TypeError(f"{objname} is not an array")
     if obj.masked is None:
         masked = prep_masked_array(entry.data, objname)
-        print(f"setting masked for {objname}")
-        print(f"masked shape is {masked.shape}")
         obj.masked = masked
     # NOTE: these look repetitive, but they're legitimately distinct cases
     # 2D array case (always grayscale)
@@ -286,6 +299,30 @@ def get_product_info(path: str) -> str:
             continue
         out[objname] = dataclasses.asdict(obj.info)
     return to_js_unproxied({"ok": True, "objects": json.dumps(out)})
+
+
+def bsq_to_bip_1d(bsq: np.ndarray) -> np.ndarray:
+    """
+    Repack a 3-band BSQ array into a flat 1-D BIP array suitable
+    for upload as a WebGL RGB32F texture.
+
+    Parameters
+    ----------
+    bsq : np.ndarray
+        Shape (3, H, W), any numeric dtype. Band order is
+        preserved as-is (caller decides R/G/B semantics).
+
+    Returns
+    -------
+    np.ndarray
+        Shape (H * W * 3,), dtype float32, interleaved as
+        R0 G0 B0  R1 G1 B1  ...  Rn Gn Bn  in row-major order
+    """
+    if bsq.ndim != 3 or bsq.shape[0] != 3:
+        raise ValueError(f"Expected shape (3, H, W), got {bsq.shape}. ")
+
+    bip = np.moveaxis(bsq, 0, -1)   # view, no copy yet
+    return np.ascontiguousarray(bip, dtype=np.float32).ravel()
 
 
 def to_rgba_bip_1d(arr: np.ndarray) -> np.ndarray:
