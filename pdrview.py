@@ -9,13 +9,24 @@ from pyodide.ffi import to_js
 
 
 def to_js_unproxied(*args, **kwargs):
+    """
+    Convenience wrapper for pyodide. The important bit is disabling
+    Python proxy objects so the JS side gets plain converted values.
+    """
     return to_js(*args, **kwargs, create_pyproxies=False)
 
 
 @dataclasses.dataclass
 class PixelCache:
-    # TODO, maybe: this should probably work on actual in-memory size,
-    #  not pixel count
+    """
+    Very simple size-bounded LRU cache for numpy arrays.
+
+    Keys are tuples describing a loaded product / object / band.
+    Values are pixel arrays (either scaled display arrays or masked arrays).
+
+    The cache evicts oldest entries first once total byte usage exceeds
+    `max_bytes`.
+    """
     max_bytes: int
     _cache: OrderedDict[tuple, np.ndarray] = dataclasses.field(
         default_factory=OrderedDict
@@ -23,12 +34,23 @@ class PixelCache:
     _total: int = 0
 
     def get(self, key):
+        """
+        LRU lookup:
+        - return None if absent
+        - move the entry to the end if present, marking it as recently used
+        """
         if key not in self._cache:
             return None
         self._cache.move_to_end(key)
         return self._cache[key]
 
     def put(self, key, arr: np.ndarray):
+        """
+        Insert or replace an array in cache.
+
+        Returns False if the single array is too large to cache at all.
+        Otherwise stores it, evicts older entries if needed, and returns True.
+        """
         if arr.nbytes > self.max_bytes:
             return False
         if key in self._cache:
@@ -40,10 +62,17 @@ class PixelCache:
         return True
 
     def evict_path(self, path: str):
+        """
+        Remove every cached entry associated with a particular file path.
+        """
         for key in [k for k in self._cache if k[0] == path]:
             self._total -= self._cache.pop(key).nbytes
 
     def _evict(self):
+        """
+        Repeatedly evict the least-recently-used item until we're under the
+        byte limit or the cache is empty.
+        """
         while self._total > self.max_bytes and self._cache:
             _, arr = self._cache.popitem(last=False)
             self._total -= arr.nbytes
@@ -51,13 +80,17 @@ class PixelCache:
 
 PIXEL_CACHE = PixelCache(max_bytes=2 * 1024 ** 3)
 
-# (path, objname, band) for scaled pixel arrays
-# (path, objname, None) for masked arrays
+# Cache key conventions:
+#   (path, objname, band)  -> scaled pixel arrays for one band or RGB triplet
+#   (path, objname, None)  -> masked/scaled source array before flattening
 CacheKey = tuple[str, str, int | str | None]
 
 
 @dataclasses.dataclass
 class ArrayInfo:
+    """
+    Lightweight metadata about a renderable array object.
+    """
     width: int
     height: int
     bands: int
@@ -66,23 +99,36 @@ class ArrayInfo:
 
 @dataclasses.dataclass
 class BandPixels:
-    # currently, should always be 1 or 3. if 1, we expect pixels to just be
-    # the raveled array. if 3, we expect them to be a contiguous BIP
-    # [r, g, b, r, g, b] array. these are intended to be friendly for
-    # WebGL r32f and rgb32f respectively.
+    """
+    Metadata describing how a particular band (or RGB composite) was scaled.
+
+    `channels` is expected to be:
+      - 1 for a flattened single-band array
+      - 3 for flattened BIP RGB data suitable for WebGL RGB32F use
+
+    `scale` and `offset` define the original -> normalized transform:
+        scaled = (raw - offset) / scale
+
+    Statistical fields are stored in normalized 0-1 space as well.
+    """
     channels: int
     scale: float
     offset: float
-    # these statistics are all also scaled/offset to the 0-1 array
     mean: float
     std: float
     p02: float
     p98: float
 
 
-# TODO: decide how many of these we actually want to cache
 @dataclasses.dataclass
 class ArrayObject:
+    """
+    Representation of a displayable array-bearing object in a product.
+
+    `band_pixels` caches per-band display metadata, not the pixel
+    arrays themselves. They are independently stored in, and may be
+    independently evicted from, PIXEL_CACHE.
+    """
     band_pixels: dict[str | int, BandPixels]
     info: ArrayInfo
     name: str
@@ -90,11 +136,19 @@ class ArrayObject:
 
 @dataclasses.dataclass
 class DummyObject:
+    """
+    Placeholder used for product objects that are not renderable arrays.
+    """
     pass
 
 
 @dataclasses.dataclass
 class RegistryEntry:
+    """
+    One loaded product file plus the objects discovered inside it.
+
+    `populated` indicates whether `objects` has been scanned and filled.
+    """
     data: pdr.Data
     objects: dict[str, ArrayObject | DummyObject]
     populated: bool = False
@@ -103,9 +157,20 @@ class RegistryEntry:
 DATA_REGISTRY: dict[str, RegistryEntry] = {}
 
 
+# TODO: this is expensive, but a rare pathological case. might nevertheless
+#  want to add a separate cache path to keep this unscaled array 'semi-warm'
+#  (assuming it's even renderable, which for products this weird...).
 def _just_load_and_check_array_shape(
     data, objname
 ) -> tuple[dict | None, bool]:
+    """
+    Fallback path: actually load the array and infer shape from the ndarray
+    itself when metadata parsing is missing, broken, or incomplete.
+
+    Returns:
+      ({bands, width, height}, True) if the object is a 2-D or 3-D ndarray
+      (None, False) otherwise
+    """
     arr = data[objname]
     delattr(data, objname)
     if not isinstance(arr, np.ndarray):
@@ -122,13 +187,29 @@ def _just_load_and_check_array_shape(
     return {'bands': bands, 'width': width, 'height': height}, True
 
 
-# TODO: this might be a little fragile
 def init_array_object(data: pdr.Data, objname: str) -> ArrayObject | None:
+    """
+    Try to determine whether `objname` names a renderable array in this product,
+    and if so build an ArrayObject with dimensions and metadata.
+
+    This function has a mildly baroque format-dispatch structure because it
+    supports several product standards:
+      - PDS4
+      - FITS
+      - PDS3
+      - desktop image formats known to PDR
+      - generic ndarray fallback
+
+    Returns:
+      ArrayObject if the object looks renderable
+      None otherwise
+    """
     from pdr.loaders.utility import DESKTOP_IMAGE_STANDARDS
 
     dims, block = {}, None
 
     if data.standard == 'PDS4' and objname in data._pds4_structures:
+        # For PDS4, inspect the declared structure rather than loading pixels.
         structure = data._pds4_structures[objname]
         if not hasattr(structure, "type"):
             return None
@@ -145,6 +226,7 @@ def init_array_object(data: pdr.Data, objname: str) -> ArrayObject | None:
         if dims.get('bands') is None:
             dims['bands'] = 1
     elif data.standard == 'FITS':
+        # use astropy's HDU summary instead of loading full data.
         from astropy.io import fits
         info = fits.info(data.filename, False)
         for hdu in info:
@@ -158,12 +240,13 @@ def init_array_object(data: pdr.Data, objname: str) -> ArrayObject | None:
             elif len(dimensions) == 3:
                 dims['bands'] = dimensions[2]
             else:
-                # 1-D arrays and > 3-D arrays not supported;
-                # this case also covers 0-D 'stub' HDUs
+                # 1-D arrays, 0-D stubs, and >3-D arrays not supported
                 return None
             dims['width'] = dimensions[0]
             dims['height'] = dimensions[1]
     elif data.standard == 'PDS3':
+        # PDS3 requires a little more loader gymnastics because object pointers
+        # can refer to several different backing representations.
         from pdr.formats.checkers import check_special_block
         from pdr.loaders.datawrap import (
             ReadCompressedImage, ReadImage, ReadFits
@@ -186,16 +269,19 @@ def init_array_object(data: pdr.Data, objname: str) -> ArrayObject | None:
         if not is_special:
             block = data.metablock_(objname)
         if block is None:
+            # No usable block metadata; load and infer shape directly.
             dims, ok = _just_load_and_check_array_shape(data, objname)
         else:
             dims['height'] = block.get('LINES')
             dims['width'] = block.get('LINE_SAMPLES')
             dims['bands'] = block.get('BANDS', 1)
         if any(d is None for d in dims.values()):
+            # Metadata existed but was incomplete; fall back to loading.
             dims, ok = _just_load_and_check_array_shape(data, objname)
         if not ok:
             return None
     elif data.standard in DESKTOP_IMAGE_STANDARDS:
+        # For ordinary desktop image files, PIL tells us mode and dimensions.
         from PIL import Image
 
         im = Image.open(data.filename)
@@ -208,13 +294,18 @@ def init_array_object(data: pdr.Data, objname: str) -> ArrayObject | None:
         elif im.mode in ('RGB', 'LAB', 'HSV', 'YCbCr'):
             dims['bands'] = 3
         else:
+            # unknown / odd image mode: fall back to ndarray loading
             dims, ok = _just_load_and_check_array_shape(data, objname)
             if not ok:
                 return None
     else:
+        # Generic fallback for anything not covered above.
         dims, ok = _just_load_and_check_array_shape(data, objname)
         if not ok:
             return None
+
+    # Prefer per-object metablock where available; otherwise fall back
+    # to overall product metadata.
     if block is None:
         meta = (
             dict(data.metablock(objname))
@@ -228,6 +319,11 @@ def init_array_object(data: pdr.Data, objname: str) -> ArrayObject | None:
 
 
 def populate_registry_entry(entry: RegistryEntry):
+    """
+    Scan all objects in a loaded pdr.Data product and classify each one as:
+      - ArrayObject if it looks renderable
+      - DummyObject otherwise
+    """
     data, objects = entry.data, entry.objects
     for objname in data.keys():
         obj = init_array_object(data, objname)
@@ -241,20 +337,39 @@ def populate_registry_entry(entry: RegistryEntry):
 #  cache. We probably want to be smarter about this. But our memory is very
 #  limited.
 def clear_cache(path, cache=PIXEL_CACHE):
+    """
+    Keep only the current product alive in the registry, and evict all cache
+    entries belonging to the given path.
+    """
+    other_paths = []
     for p in tuple(DATA_REGISTRY.keys()):
         if p != path:
+            other_paths.append(p)
             del DATA_REGISTRY[p]
-    cache.evict_path(path)
+    for p in other_paths:
+        cache.evict_path(p)
 
 
 @dataclasses.dataclass
 class LoadResult:
+    """
+    Result wrapper for product-loading operations.
+    """
     ok: bool
     entry: RegistryEntry | None = None
     error: Exception | None = None
 
 
 def load_if_required(path: str) -> LoadResult:
+    """
+    Load a product from disk only if it is not already present in the global
+    registry.
+
+    On success:
+      - the product is parsed with pdr.read()
+      - cache/registry are trimmed via clear_cache()
+      - its object inventory is populated
+    """
     if path in DATA_REGISTRY.keys():
         return LoadResult(ok=True, entry=DATA_REGISTRY[path])
     try:
@@ -269,6 +384,13 @@ def load_if_required(path: str) -> LoadResult:
 
 
 def prep_masked_array(data: pdr.Data, objname: str) -> np.ma.MaskedArray:
+    """
+    Load an object's scaled data, convert invalid values to a masked array,
+    and remove the loaded attribute from the pdr object afterward.
+
+    This produces the "source" array used for later band selection and
+    normalization.
+    """
     data.load(objname, reload=True)
     arr = data.get_scaled(objname)
     delattr(data, objname)
@@ -277,6 +399,9 @@ def prep_masked_array(data: pdr.Data, objname: str) -> np.ma.MaskedArray:
 
 
 def _compute_stats(pixels: np.ndarray) -> dict:
+    """
+    Compute summary statistics on finite, unmasked pixels only.
+    """
     flat = pixels.compressed() if isinstance(pixels, np.ma.MaskedArray) else pixels.ravel()
     flat = flat[np.isfinite(flat)]
     p02, p98 = np.percentile(flat, [2, 98])
@@ -296,8 +421,19 @@ def _scale_and_cache(
     raw_stats: dict,
     cache: PixelCache = PIXEL_CACHE
 ) -> tuple[BandPixels, np.ndarray]:
+    """
+    Normalize one band (or an RGB 3-band stack) into float32 0-1 display space,
+    compute normalized statistics metadata, and cache the flattened pixel array.
+
+    For single-band data:
+      - output is a 1-D float32 array
+
+    For RGB:
+      - input is expected to be BSQ shaped (3, H, W)
+      - output is flattened BIP [r,g,b,r,g,b,...]
+    """
     if not isinstance(band, int):
-        if not pixels.ndim == 3 and pixels.shape[0] == 3:
+        if not (pixels.ndim == 3 and pixels.shape[0] == 3):
             raise ValueError("Must be a 3-band BSQ array")
     elif pixels.ndim != 2:
         raise ValueError("Must be a 2-D array")
@@ -338,6 +474,10 @@ def _scale_and_cache(
 def _get_or_reload_masked(
     entry: RegistryEntry, objname: str, cache: PixelCache
 ) -> np.ndarray:
+    """
+    Return the cached masked/scaled source array for an object if present;
+    otherwise reload it and cache it under the `(path, objname, None)` key.
+    """
     key = (entry.data.filename, objname, None)
     if (masked := cache.get(key)) is not None:
         return masked
@@ -347,7 +487,17 @@ def _get_or_reload_masked(
 
 
 def _resolve_band(obj: ArrayObject, band: int | str | None) -> int | Literal["RGB"]:
-    """Normalize whatever the caller passed into a canonical cache key."""
+    """
+    Normalize whatever the caller passed into a canonical selection key.
+
+    Rules:
+      - single-band objects always resolve to band 0
+      - non-integer request on 3- or 4-band data means "RGB"
+      - non-integer request on other multi-band data picks the middle band
+      - integer request is passed through unchanged
+
+    This normalized value is also used as the cache key component.
+    """
     if obj.info.bands == 1:
         return 0
     if not isinstance(band, int) and obj.info.bands in (3, 4):
@@ -360,6 +510,13 @@ def _resolve_band(obj: ArrayObject, band: int | str | None) -> int | Literal["RG
 def _arr_for_band(
     masked: np.ndarray, band: int | Literal["RGB"], obj: ArrayObject
 ) -> np.ndarray:
+    """
+    Slice the source masked array down to the requested view:
+
+      - RGB request -> first 3 bands
+      - single-band object -> the array itself
+      - explicit band index -> that band from a band-sequential cube
+    """
     if not isinstance(band, int):
         return masked[:3]
     return masked if obj.info.bands == 1 else masked[band]
@@ -373,7 +530,12 @@ def _rescale_and_cache(
     bandpixels: BandPixels,
     cache: PixelCache = PIXEL_CACHE,
 ) -> tuple[BandPixels, np.ndarray]:
-    """Pixel array was evicted but metadata survives; skip stat recomputation."""
+    """
+    Rebuild scaled pixels from surviving BandPixels metadata after the pixel
+    array itself was evicted from cache.
+
+    This avoids recomputing stats; it just reapplies the known scale/offset.
+    """
     scaled = ((arr - bandpixels.offset) / bandpixels.scale).astype('f4')
     if isinstance(scaled, np.ma.MaskedArray):
         scaled[scaled.mask] = np.nan
@@ -389,6 +551,17 @@ def get_scaled_rgba_bip(
     band: str | int | None = None,
     cache: PixelCache = PIXEL_CACHE,
 ) -> tuple[BandPixels, np.ndarray]:
+    """
+    Main accessor for a display-ready pixel payload.
+
+    Flow:
+      1. Validate that the named object exists and is renderable.
+      2. Normalize the band selection.
+      3. Return cached band pixels if both metadata and scaled array survive.
+      4. Otherwise reload the masked source array if needed.
+      5. If stats metadata survives, just rescale and recache.
+      6. Else compute stats, scale, and cache from scratch.
+    """
     entry = result.entry
     if objname not in entry.objects:
         raise ValueError(f"no array named {objname} in {entry.data.filename}")
@@ -417,9 +590,15 @@ def get_scaled_rgba_bip(
 
 def to_json_safe(meta: dict | multidict.MultiDict):
     """
-    Flatten MultiDicts into dicts; discard repeated keys,
-    stringify stuff. a little inefficient but these structures
-    aren't that large.
+    Convert nested metadata structures into something JSON-serializable.
+
+    Behavior:
+      - MultiDict -> plain dict (repeated keys are discarded)
+      - dict/list/tuple -> recurse
+      - JSON-native scalars -> pass through
+      - everything else -> stringify
+
+    a little inefficient but these structures aren't that large.
     """
     if isinstance(meta, multidict.MultiDict):
         meta = dict(meta)
@@ -434,23 +613,21 @@ def to_json_safe(meta: dict | multidict.MultiDict):
         return str(meta)
 
 
-def get_first_array_objname(data: pdr.Data) -> str:
-    if len(objnames := get_array_objnames(data)) == 0:
-        raise ValueError(f"No images in {data.filename}")
-    return objnames[0]
-
-
-def get_array_objnames(data: pdr.Data) -> list[str]:
-    return [
-        k for k in data.keys() if isinstance(data[k], np.ndarray)
-    ]
-
-
 def get_array_image(
     path: str,
     objname: str | None = None,
     band: str | int | None = None
-):
+) -> object:
+    """
+    Public JS-facing helper to fetch one displayable array payload.
+
+    Returns a JS object with:
+      - ok/error status
+      - flattened pixel buffer
+      - scaling metadata
+      - dimensions and channel count
+      - summary statistics in normalized space
+  """
     try:
         result = load_if_required(path)
         if not result.ok:
@@ -476,7 +653,14 @@ def get_array_image(
         })
 
 
-def get_product_info(path: str) -> str:
+def get_product_info(path: str) -> object:
+    """
+    Public JS-facing helper to return metadata for every renderable array object
+    in a product.
+
+    Output shape:
+      { ok: True, objects: "<json string>" }
+   """
     result = load_if_required(path)
     if not result.ok:
         return to_js_unproxied({
