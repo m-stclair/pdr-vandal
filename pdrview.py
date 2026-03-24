@@ -1,5 +1,6 @@
 import dataclasses
 import json
+from typing import Literal
 
 import multidict
 import numpy as np
@@ -59,10 +60,13 @@ class RegistryEntry:
 DATA_REGISTRY: dict[str, RegistryEntry] = {}
 
 
-def init_array_object(data: pdr.Data, objname: str) -> ArrayObject | None:
+def _just_load_and_check_array_shape(
+    data, objname
+) -> tuple[dict | None, bool]:
     arr = data[objname]
+    delattr(data, objname)
     if not isinstance(arr, np.ndarray):
-        return None
+        return None, False
     if len(arr.shape) == 3:
         bands = arr.shape[0]
         width, height = (arr.shape[2], arr.shape[1])
@@ -71,15 +75,107 @@ def init_array_object(data: pdr.Data, objname: str) -> ArrayObject | None:
         width, height = (arr.shape[1], arr.shape[0])
     else:
         # not dealing with 1-D arrays
-        return None
-    meta = (
-        dict(data.metablock(objname))
-        if data.metablock(objname) is not None
-        else dict(data.metadata)
-    )
-    info = ArrayInfo(
-        json_meta=to_json_safe(meta), height=height, width=width, bands=bands
-    )
+        return None, False
+    return {'bands': bands, 'width': width, 'height': height}, True
+
+
+# TODO: this might be a little fragile
+def init_array_object(data: pdr.Data, objname: str) -> ArrayObject | None:
+    from pdr.loaders.utility import DESKTOP_IMAGE_STANDARDS
+
+    dims, block = {}, None
+
+    if data.standard == 'PDS4' and objname in data._pds4_structures:
+        structure = data._pds4_structures[objname]
+        if not hasattr(structure, "type"):
+            return None
+        if structure.type not in ('Array_3D_Image', 'Array_2D_Image'):
+            return None
+        axis_array = structure.meta_data['Axis_Array']
+        for a in axis_array:
+            if a['axis_name'] == 'Line':
+                dims['height'] = a['elements']
+            elif a['axis_name'] == 'Sample':
+                dims['width'] = a['elements']
+            elif a['axis_name'] == 'Band':
+                dims['bands'] = a['elements']
+        if dims.get('bands') is None:
+            dims['bands'] = 1
+    elif data.standard == 'FITS':
+        from astropy.io import fits
+        info = fits.info(data.filename, False)
+        for hdu in info:
+            (_ix, extname, _ver, exttype, _cards, dimensions, _fmt, _) = hdu
+            if extname != objname:
+                continue
+            if exttype not in ('PrimaryHDU', 'ImageHDU', 'CompImageHDU'):
+                return None
+            if len(dimensions) == 2:
+                dims['bands'] = 1
+            elif len(dimensions) == 3:
+                dims['bands'] = dimensions[2]
+            else:
+                # 1-D arrays and > 3-D arrays not supported;
+                # this case also covers 0-D 'stub' HDUs
+                return None
+            dims['width'] = dimensions[0]
+            dims['height'] = dimensions[1]
+    elif data.standard == 'PDS3':
+        from pdr.formats.checkers import check_special_block
+        from pdr.loaders.datawrap import (
+            ReadCompressedImage, ReadImage, ReadFits
+        )
+        from pdr.loaders.dispatch import pointer_to_loader
+
+        loader = pointer_to_loader(objname, data)
+        if not isinstance(loader, (ReadImage, ReadFits, ReadCompressedImage)):
+            return None
+
+        is_special, block = check_special_block(
+            objname, data, data.identifiers
+        )
+        ok = True
+        if not is_special:
+            block = data.metablock_(objname)
+        if block is None:
+            dims, ok = _just_load_and_check_array_shape(data, objname)
+        else:
+            dims['width'] = block.get('LINES')
+            dims['height'] = block.get('LINE_SAMPLES')
+            dims['bands'] = block.get('BANDS', 1)
+        if any(d is None for d in dims.values()):
+            dims, ok = _just_load_and_check_array_shape(data, objname)
+        if not ok:
+            return None
+    elif data.standard in DESKTOP_IMAGE_STANDARDS:
+        from PIL import Image
+
+        im = Image.open(data.filename)
+        dims['width'] = im.width
+        dims['height'] = im.height
+        if im.mode in (1, "L", "I", "F"):
+            dims['bands'] = 1
+        elif im.mode in ('CMYK', 'RGBA'):
+            dims['bands'] = 4
+        elif im.mode in ('RGB', 'LAB', 'HSV', 'YCbCr'):
+            dims['bands'] = 3
+        else:
+            dims, ok = _just_load_and_check_array_shape(data, objname)
+            if not ok:
+                return None
+    else:
+        dims, ok = _just_load_and_check_array_shape(data, objname)
+        if not ok:
+            return None
+    if block is None:
+        meta = (
+            dict(data.metablock(objname))
+            if data.metablock(objname) is not None
+            else dict(data.metadata)
+        )
+    else:
+        meta = block
+    info = ArrayInfo(json_meta=to_json_safe(meta), **dims)
     return ArrayObject(info=info, band_pixels={})
 
 
@@ -132,7 +228,6 @@ def prep_masked_array(data: pdr.Data, objname: str) -> np.ma.MaskedArray:
 
 
 def _compute_stats(pixels: np.ndarray) -> dict:
-    """pixels here is a raw single-band or pre-pad array, no alpha contamination"""
     flat = pixels.compressed() if isinstance(pixels, np.ma.MaskedArray) else pixels.ravel()
     flat = flat[np.isfinite(flat)]
     p02, p98 = np.percentile(flat, [2, 98])
@@ -144,11 +239,16 @@ def _compute_stats(pixels: np.ndarray) -> dict:
     }
 
 
-def _scale_and_set(obj, band, pixels, raw_stats) -> BandPixels:
+def _scale_and_set(
+    obj: ArrayObject,
+    band: int | Literal["RGB"],
+    pixels: np.ndarray,
+    raw_stats: dict
+) -> BandPixels:
     if not isinstance(band, int):
         if not pixels.ndim == 3 and pixels.shape[0] == 3:
             raise ValueError("Must be a 3-band BSQ array")
-    elif band.ndim != 2:
+    elif pixels.ndim != 2:
         raise ValueError("Must be a 2-D array")
     offset = np.nanmin(pixels)
     scale = np.nanmax(pixels) - offset
@@ -165,6 +265,7 @@ def _scale_and_set(obj, band, pixels, raw_stats) -> BandPixels:
         scaled = bsq_to_bip_1d(scaled)
         channels = 3
     else:
+        scaled = scaled.ravel()
         channels = 1
 
     bandpixels = BandPixels(
@@ -181,15 +282,12 @@ def _scale_and_set(obj, band, pixels, raw_stats) -> BandPixels:
 
 
 def _get_set_grayscale(obj: ArrayObject, band: int) -> BandPixels:
-    print("grayscale path")
     if (bandpixels := obj.band_pixels.get(band)) is not None:
         return bandpixels
     if obj.info.bands == 1:
-        print("singleband path")
         band = 0
         arr = obj.masked
     else:
-        print(f"multiband path at band {band}")
         arr = obj.masked[band]
     raw_stats = _compute_stats(arr)
     return _scale_and_set(obj, band, arr, raw_stats)
@@ -207,20 +305,18 @@ def get_scaled_rgba_bip(
     if obj.masked is None:
         masked = prep_masked_array(entry.data, objname)
         obj.masked = masked
-    # NOTE: these look repetitive, but they're legitimately distinct cases
     # 2D array case (always grayscale)
     if obj.info.bands == 1:
         return _get_set_grayscale(obj, 0)
-    # RGB case
-    # TODO: this is 'default' RGB. if we implement arbitrary 3-band
-    #  mapping, that's yet another case
+    # default RGB case
+    # TODO: implement arbitrary 3-band mapping
     if not isinstance(band, int) and obj.info.bands in (3, 4):
         if (pixels := obj.band_pixels.get("RGB")) is not None:
             return pixels
         arr = obj.masked[:3]
         raw_stats = _compute_stats(arr)
         return _scale_and_set(obj, "RGB", arr, raw_stats)
-    # TODO: add arbitrary RGB band selection
+    # single-band selection from multiband array case
     if not isinstance(band, int):
         band = obj.info.bands // 2
     return _get_set_grayscale(obj, band)
@@ -258,9 +354,9 @@ def get_array_objnames(data: pdr.Data) -> list[str]:
 
 
 def get_array_image(
-    path: str,
-    objname: str | None = None,
-    band: str | int | None = None
+        path: str,
+        objname: str | None = None,
+        band: str | int | None = None
 ):
     try:
         result = load_if_required(path)
@@ -275,6 +371,7 @@ def get_array_image(
             "offset": float(bandpixels.offset),
             "width": int(info.width),
             "height": int(info.height),
+            "channels": int(bandpixels.channels),
             "mean": float(bandpixels.mean),
             "std": float(bandpixels.std),
             "p02": float(bandpixels.p02),
@@ -321,51 +418,5 @@ def bsq_to_bip_1d(bsq: np.ndarray) -> np.ndarray:
     if bsq.ndim != 3 or bsq.shape[0] != 3:
         raise ValueError(f"Expected shape (3, H, W), got {bsq.shape}. ")
 
-    bip = np.moveaxis(bsq, 0, -1)   # view, no copy yet
+    bip = np.moveaxis(bsq, 0, -1)  # view, no copy yet
     return np.ascontiguousarray(bip, dtype=np.float32).ravel()
-
-
-def to_rgba_bip_1d(arr: np.ndarray) -> np.ndarray:
-    """
-    Convert an input ndarray to a 1-D RGBA BIP array.
-
-    Cases handled:
-    1) 2D array (H, W): treated as grayscale
-       -> [x1, x1, x1, 1, x2, x2, x2, 1, ...]
-    2) 3D BSQ array (3, H, W): treated as (R, G, B)
-       -> [r1, g1, b1, 1, r2, g2, b2, 1, ...]
-
-    Returns
-    -------
-    np.ndarray
-        Flattened 1-D array in RGBA BIP order.
-
-    Raises
-    ------
-    ValueError
-        If input is not 2D or not a 3-band BSQ 3D array.
-    """
-    arr = np.asarray(arr)
-
-    if arr.ndim == 2:
-        print("grayscale BIP conversion path")
-        # Grayscale: replicate into R, G, B
-        h, w = arr.shape
-        alpha = np.ones((h, w), dtype=arr.dtype)
-        rgba = np.stack((arr, arr, arr, alpha), axis=-1)  # (H, W, 4)
-
-    elif arr.ndim == 3 and arr.shape[0] == 3:
-        print("RGB BIP conversion path")
-        # BSQ: (3, H, W) -> split into R, G, B
-        r, g, b = arr
-        h, w = r.shape
-        alpha = np.ones((h, w), dtype=arr.dtype)
-        rgba = np.stack((r, g, b, alpha), axis=-1)  # (H, W, 4)
-
-    else:
-        raise ValueError(
-            f"Expected a 2D array or a 3D BSQ array with shape (3, H, W), got "
-            f"{arr.shape}"
-        )
-
-    return rgba.reshape(-1)

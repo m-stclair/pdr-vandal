@@ -2,11 +2,9 @@ import {resolveAnimAll} from "../utils/animutils.js";
 import {initGLEffect, loadFragSrcInit} from "../utils/gl.js";
 import {
     BlendModeEnum,
-    BlendModeOpts,
     BlendTargetEnum,
-    BlendTargetOpts,
-    ColorspaceEnum, hasChromaBoostImplementation,
-    ColorspaceOpts,
+    ColorspaceEnum,
+    hasChromaBoostImplementation,
 } from "../utils/glsl_enums.js";
 import {generate2DKernel, KernelTypeEnum, subsampleKernel2D} from "../utils/kernels.js";
 import {blendControls} from "../utils/ui_configs.js";

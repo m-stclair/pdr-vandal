@@ -7,6 +7,7 @@ import { monkeyPatchBindTexture, monkeyPatchDrawArrays } from "../tools/gl_bs.js
 import { clamp } from "./mathutils.js";
 
 const ingressVertSrc = `#version 300 es
+
 in vec2 a_position;
 out vec2 v_uv;
 void main() {
@@ -28,7 +29,7 @@ void main() {
     outColor = texture(u_source, srcUV);
 }`
 
-const floatIngressFragSrc = `#version 300 es
+const floatRGBIngressFragSrc = `#version 300 es
 precision highp float;
 
 uniform sampler2D u_source;
@@ -41,6 +42,21 @@ uniform vec2 u_viewSpan;
 void main() {
     vec2 srcUV = clamp(u_center + (v_uv - 0.5) * u_viewSpan, 0.0, 1.0);
     outColor = vec4(texture(u_source, srcUV).rgb, 1.0);
+}`;
+
+const floatGrayIngressFragSrc = `#version 300 es
+precision highp float;
+uniform sampler2D u_source;
+in vec2 v_uv;
+out vec4 outColor;
+
+uniform vec2 u_center;
+uniform vec2 u_viewSpan;
+
+void main() {
+    vec2 srcUV = clamp(u_center + (v_uv - 0.5) * u_viewSpan, 0.0, 1.0);
+    float v = texture(u_source, srcUV).r;
+    outColor = vec4(v, v, v, 1.0);
 }`;
 
 const outputFragSrc = `#version 300 es
@@ -149,7 +165,8 @@ export class GlitchRenderer {
 
     setFloat32Source(f32Array, width, height, channels) {
         this.source = {
-            kind: channels === 1 ? "r32f" : "rgb32f",            width,
+            kind: channels === 1 ? "r32f" : "rgb32f",
+            width,
             height,
             image: null,
             data: f32Array,
@@ -211,16 +228,23 @@ export class GlitchRenderer {
             center: gl.getUniformLocation(htmlProgram, "u_center"),
         };
 
-        const floatProgram = this.compileProgram(ingressVertSrc, floatIngressFragSrc);
-        const floatUniforms = {
-            source: gl.getUniformLocation(floatProgram, "u_source"),
-            viewSpan: gl.getUniformLocation(floatProgram, "u_viewSpan"),
-            center: gl.getUniformLocation(floatProgram, "u_center"),
+        const f32RGBProgram = this.compileProgram(ingressVertSrc, floatRGBIngressFragSrc);
+        const f32RGBUniforms = {
+            source: gl.getUniformLocation(f32RGBProgram, "u_source"),
+            viewSpan: gl.getUniformLocation(f32RGBProgram, "u_viewSpan"),
+            center: gl.getUniformLocation(f32RGBProgram, "u_center"),
         };
 
+        const f32GrayProgram = this.compileProgram(ingressVertSrc, floatGrayIngressFragSrc);
+        const f32GrayUniforms = {
+            source: gl.getUniformLocation(f32GrayProgram, "u_source"),
+            viewSpan: gl.getUniformLocation(f32GrayProgram, "u_viewSpan"),
+            center: gl.getUniformLocation(f32GrayProgram, "u_center"),
+        };
         return {
             html: { program: htmlProgram, uniforms: htmlUniforms },
-            float: { program: floatProgram, uniforms: floatUniforms },
+            rgb32f: { program: f32RGBProgram, uniforms: f32RGBUniforms },
+            r32f: { program: f32GrayProgram, uniforms: f32GrayUniforms }
         };
     }
 
@@ -565,7 +589,10 @@ export class GlitchRenderer {
     }
 
     buildFloatSourceTexture() {
-        if (!this.source || this.source.kind !== "rgba32f") return false;
+        if (
+            !this.source
+            || (this.source.kind !== "rgb32f" && this.source.kind !== "r32f")
+        ) return false;
 
         const gl = this.gl;
         if (this.sourceTexture) {
@@ -590,17 +617,17 @@ export class GlitchRenderer {
             gl.pixelStorei(gl.UNPACK_SKIP_IMAGES, 0);
         }
 
-        gl.texImage2D(
-            gl.TEXTURE_2D,
-            0,
-            gl.RGBA32F,
-            this.source.width,
-            this.source.height,
-            0,
-            gl.RGBA,
-            gl.FLOAT,
-            this.source.data
-        );
+        if (this.source.kind === "r32f") {
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F,
+                          this.source.width, this.source.height, 0,
+                          gl.RED, gl.FLOAT, this.source.data);
+        } else if (this.source.kind === "rgb32f") {
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB32F,
+                          this.source.width, this.source.height, 0,
+                          gl.RGB, gl.FLOAT, this.source.data);
+        } else {
+            throw new Error(`Unrecognized source kind ${this.source.kind}`)
+        }
 
         const filter = this.floatLinear ? gl.LINEAR : gl.NEAREST;
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
@@ -728,21 +755,15 @@ export class GlitchRenderer {
 
         const [spanX, spanY] = this.getViewSpan(w, h);
 
-        if (this.source.kind === "html") {
-            const { program, uniforms } = this.ingress.html;
-            gl.useProgram(program);
-            gl.uniform1i(uniforms.source, 0);
-            gl.uniform2f(uniforms.viewSpan, spanX, spanY);
-            gl.uniform2f(uniforms.center, this.centerX, this.centerY);
-        } else if (this.source.kind === "rgba32f") {
-            const { program, uniforms } = this.ingress.float;
-            gl.useProgram(program);
-            gl.uniform1i(uniforms.source, 0);
-            gl.uniform2f(uniforms.viewSpan, spanX, spanY);
-            gl.uniform2f(uniforms.center, this.centerX, this.centerY);
-        } else {
+        const { program, uniforms } = this.ingress[this.source.kind];
+        if (!program) {
             throw new Error(`Unknown source kind: ${this.source.kind}`);
         }
+
+        gl.useProgram(program);
+        gl.uniform1i(uniforms.source, 0);
+        gl.uniform2f(uniforms.viewSpan, spanX, spanY);
+        gl.uniform2f(uniforms.center, this.centerX, this.centerY);
 
         gl.drawArrays(gl.TRIANGLES, 0, 6);
 
@@ -767,7 +788,7 @@ export class GlitchRenderer {
         if (this.source.kind === "html") {
             return this.buildHTMLSourceTexture();
         }
-        if (this.source.kind === "rgba32f") {
+        else if (this.source.kind === "rgb32f" || this.source.kind === "r32f") {
             return this.buildFloatSourceTexture();
         }
         throw new Error(`Unknown source kind: ${this.source.kind}`);
@@ -775,7 +796,6 @@ export class GlitchRenderer {
 
     writeToCanvas(tex) {
         const gl = this.gl;
-        const canvas = gl.canvas;
         if (this.outputVert === null) {
             this.outputVert = gl.createShader(gl.VERTEX_SHADER);
             gl.shaderSource(this.outputVert, outputVertSrc)
