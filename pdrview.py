@@ -275,11 +275,11 @@ def init_array_object(data: pdr.Data, objname: str) -> ArrayObject | None:
             dims['height'] = block.get('LINES')
             dims['width'] = block.get('LINE_SAMPLES')
             dims['bands'] = block.get('BANDS', 1)
+        if not ok:
+            return None
         if any(d is None for d in dims.values()):
             # Metadata existed but was incomplete; fall back to loading.
             dims, ok = _just_load_and_check_array_shape(data, objname)
-        if not ok:
-            return None
     elif data.standard in DESKTOP_IMAGE_STANDARDS:
         # For ordinary desktop image files, PIL tells us mode and dimensions.
         from PIL import Image
