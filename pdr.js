@@ -69,6 +69,14 @@ export async function getArrayImage(path, objname, band) {
     return arrayData;
 }
 
+export async function flushPdrCache() {
+    requirePdrInterfaceInit();
+    const result = await py.fns.flush_cache();
+    if (!result.ok) {
+        throw new Error(result.error);
+    }
+}
+
 
 export async function getProductInfo(path) {
     requirePdrInterfaceInit();
@@ -82,7 +90,7 @@ export async function getProductInfo(path) {
 export async function setUpInterface() {
     const pyodide = await getPyodide();
 
-    const names = ["get_array_image", "get_product_info"];
+    const names = ["get_array_image", "get_product_info", "flush_cache"];
 
     for (const name of names) {
         const fn = pyodide.globals.get(name);

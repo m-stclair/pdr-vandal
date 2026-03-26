@@ -52,6 +52,14 @@ export async function drawRGBSquares() {
     uploadFromCanvas(ocv, "RGB square");
 }
 
+export async function drawBlank() {
+    const ocv = new OffscreenCanvas(1, 1);
+    const ctx = ocv.getContext('2d');
+    ctx.fillStyle = 'black';
+    ctx.fillRect(0, 0, 1, 1);
+    uploadFromCanvas(ocv, "blank");
+}
+
 export async function drawGrayscaleRamp() {
     const ocv = new OffscreenCanvas(2048, 2048)
     const ctx = ocv.getContext('2d')
@@ -174,6 +182,9 @@ export async function drawPattern(pattern) {
             break;
         case "sinusoid":
             await drawSinusoid();
+            break;
+        case "blank":
+            await drawBlank();
             break;
         default:
             throw new Error(`unknown pattern ${pattern}`);

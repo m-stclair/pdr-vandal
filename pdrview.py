@@ -68,6 +68,10 @@ class PixelCache:
         for key in [k for k in self._cache if k[0] == path]:
             self._total -= self._cache.pop(key).nbytes
 
+    def flush(self):
+        while len(self._cache) > 0:
+            self._cache.popitem()
+
     def _evict(self):
         """
         Repeatedly evict the least-recently-used item until we're under the
@@ -697,3 +701,15 @@ def bsq_to_bip_1d(bsq: np.ndarray) -> np.ndarray:
 
     bip = np.moveaxis(bsq, 0, -1)  # view, no copy yet
     return np.ascontiguousarray(bip, dtype=np.float32).ravel()
+
+
+def flush_cache(cache=PIXEL_CACHE):
+    try:
+        cache.flush()
+        for k in tuple(DATA_REGISTRY.keys()):
+            DATA_REGISTRY.pop(k)
+        return to_js_unproxied({"ok": True, "error": None})
+    except Exception as e:
+        return to_js_unproxied({
+            "ok": False, "error": f"{type(e).__name__}: {e}"
+        })

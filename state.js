@@ -143,10 +143,8 @@ export function flushEffectStack() {
             }
         })
     effectStack.length = 0;
-    if (appRenderer.source.kind === "rgba32f") {
-        // never get rid of the singleton input stretch
-        addEffectToStack(inputStretchEffect);
-    }
+    // never get rid of the singleton input stretch
+    addEffectToStack(inputStretchEffect);
 }
 
 export function addEffectToStack(fx) {

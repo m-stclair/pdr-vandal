@@ -57,6 +57,15 @@
         <h4>Image Export</h4>
         <p>You can save the displayed image, including pan/zoom and visual effects, by clicking the "Export PNG" button
         in the top bar.</p>
+        <h4>Large Images</h4>
+        <p>WebGL will not permit display of images above a certain extent in either dimension. What this extend is
+            depends on your specific browser, GPU, and other aspects of your computing environment. If you attempt to load
+            an image and receive an error related to this, you can try a different browser or computer. Some images may
+            simply be too large.</p>
+        <p>Similarly, the browser is a fairly memory-constrained environment, and large images, especially images with
+            many bands, may require more memory than is available. If you receive an error related to memory, you may wish
+            to try a different browser or computer. Also, if you have already opened an image this session, you can
+            fully clear pdr-vandal's cache by clicking "close image" and then try again.</p>
         <h4>Browser Image Loading</h4>
         <p>If you want to open a "desktop" format image like a JPEG or PNG, you can open it with standard browser
             features instead of PDR by clicking the "Open With Browser" button in the top bar. Desktop images will
@@ -95,18 +104,10 @@
     ||
     <label for="upload" class="file-upload-button">Open With Browser</label>
     <input type="file" id="upload" accept = "image/png,image/jpeg,image/webp" style="display: none"/>
-
-    ||
-    <button id="exportImage">Export PNG</button>
-<!--    ||-->
-<!--    <button id="openExportControlsModal">Video</button>-->
-<!--    ||-->
-<!--    <select id="presetSelect"></select>-->
-<!--    <button id="presetSave">Save</button>-->
-<!--    <button id="presetDelete">Delete</button>-->
-    ||
-    <select id="test-pattern-select"></select>
-<!--    || <button id="randomStack">Random</button>-->
+    || <button id="closeImage">Close Image</button>
+    || <button id="exportImage">Export PNG</button>
+    || <select id="test-pattern-select"></select>
+    || <button id="clear-stack">Clear Effects</button>
     || <button id="freezeAnimation">Freeze Animation</button>
     || <button id="open-help-modal" style="color: lawngreen">Help</button>
 </div>
@@ -139,7 +140,6 @@
         <summary>Save / Load Stack</summary>
         <div class="stack-controls">
             <button id="save-stack">Copy JSON</button>
-            <button id="clear-stack">Clear</button>
             <textarea id="stack-json"
                       rows="8"
                       placeholder="Paste JSON to load..."

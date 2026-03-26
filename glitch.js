@@ -1,29 +1,23 @@
 import {
-    pdrErrorModal, pdrErrorModalContent,
-    // placeholderOption,
-    pruneForMobile,
-    // setupDragAndDrop,
-    setupExportImage, setupHelpModal,
-    setupPaneDrag, setupPDRErrorModal,
-    // setupPresetUI,
+    pdrErrorModal,
+    pdrErrorModalContent,
+    setupExportImage,
+    setupHelpModal,
+    setupPaneDrag,
+    setupPDRErrorModal,
     setupStaticButtons,
-    // setupVideoCapture,
-    // setupVideoExportModal,
     setupWindow
 } from "./ui.js";
 
 import {
-    canvas,
     defaultCtx,
     addEffectToStack,
     clearRenderCache,
     Dirty,
-    getActiveEffects,
     getEffectById,
     getEffectStack,
     getAnimationFrozen,
     inputStretchEffect,
-    loadState,
     Lock,
     makeEffectInstance,
     appRenderer,
@@ -31,10 +25,8 @@ import {
     requestUIDraw,
     resetStack,
     resizeAndRedraw,
-    saveState,
-    setFilters,
     toggleEffectSelection,
-    uiState, setFreezeAnimationButtonFlag, lockRender, unlockRender, flushEffectStack
+    uiState, setFreezeAnimationButtonFlag, lockRender, unlockRender
 } from "./state.js";
 // import "./tools/debugPane.js";
 import {downloadBlob, formatFloatWidth, gid, vandalStamp} from "./utils/helpers.js";
@@ -44,7 +36,7 @@ import {resolveAnim} from "./utils/animutils.js";
 
 // noinspection ES6UnusedImports
 import {EffectPicker} from './components/effectpicker.js'
-import {pdrInitializedFlag, initPDR, getPyodide, getProductInfo, getArrayImage} from "./pdr.js";
+import {pdrInitializedFlag, initPDR, getPyodide, getProductInfo, getArrayImage, flushPdrCache} from "./pdr.js";
 import {drawPattern} from "./test_patterns.js";
 import {getAppPresetView} from "./utils/presets.js";
 
@@ -66,9 +58,10 @@ function handleHTMLUpload(e) {
     if (!file) return;
 
     const img = new Image();
-    img.onload = () => {
+    img.onload = async () => {
         appRenderer.setHTMLSource(img);
         gid("pdrUI").style.display = "none"
+        await resetPdr();
         resizeAndRedraw();
     }
     gid("activeFile").innerText = file.name;
@@ -79,6 +72,20 @@ function handleHTMLUpload(e) {
 let pdrProductInfo = {};
 
 let currentImageRequest = 0;
+
+async function resetPdr() {
+    if (!pdrInitializedFlag || !pdrProductInfo.name) return;
+    await flushPdrCache();
+
+    if (pdrProductInfo.files) {
+        const pyodide = await getPyodide();
+        for (const f of pdrProductInfo.files) {
+            pyodide.FS.unlink(f);
+        }
+        pdrProductInfo.files = undefined;
+    }
+    pdrProductInfo.name = undefined;
+}
 
 async function handlePdrBandSelect() {
     if (!pdrProductInfo.name) return;
@@ -96,8 +103,8 @@ async function handlePdrBandSelect() {
         }
 
         appRenderer.setFloat32Source(arrayData.pixels, arrayData.width,
-                                     arrayData.height, arrayData.channels,
-                                     arrayData.scale, arrayData.offset);
+            arrayData.height, arrayData.channels,
+            arrayData.scale, arrayData.offset);
         inputStretchEffect.auxiliaryCache.mean = arrayData.mean;
         inputStretchEffect.auxiliaryCache.std = arrayData.std;
         inputStretchEffect.auxiliaryCache.p02 = arrayData.p02;
@@ -149,7 +156,7 @@ dataObjectSelect.addEventListener('change', async () => {
     unlockRender();
 })
 
-imageBandSelect.addEventListener('change', async() => {
+imageBandSelect.addEventListener('change', async () => {
     lockRender();
     await handlePdrBandSelect();
     requestRender();
@@ -160,7 +167,7 @@ async function populatePdrUI() {
     if (!pdrProductInfo) return;
     dataObjectSelect.options.length = 0;
     Object.keys(pdrProductInfo['objects']).forEach(
-        function(name) {
+        function (name) {
             const opt = document.createElement('option')
             opt.value = name;
             opt.textContent = name;
@@ -190,52 +197,48 @@ function delayNextPaint() {
 }
 
 function eventToSourcePixel(e, renderer) {
-  const gl = renderer.gl;
-  const canvas = gl.canvas;
-  const rect = canvas.getBoundingClientRect();
+    const gl = renderer.gl;
+    const canvas = gl.canvas;
+    const rect = canvas.getBoundingClientRect();
 
-  // Event -> drawing buffer pixels, top-left origin
-  const px = (e.clientX - rect.left) * (canvas.width / rect.width);
-  const py = (e.clientY - rect.top)  * (canvas.height / rect.height);
+    // Event -> drawing buffer pixels, top-left origin
+    const px = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const py = (e.clientY - rect.top) * (canvas.height / rect.height);
 
-  // Canvas -> displayed image rect
-  const viewRect = renderer.getViewRect();
-  if (
-    px < viewRect.x ||
-    px >= viewRect.x + viewRect.w ||
-    py < viewRect.y ||
-    py >= viewRect.y + viewRect.h
-  ) {
-    return null; // cursor is in the letterboxed / unused canvas area
-  }
+    // Canvas -> displayed image rect
+    const viewRect = renderer.getViewRect();
+    if (
+        px < viewRect.x ||
+        px >= viewRect.x + viewRect.w ||
+        py < viewRect.y ||
+        py >= viewRect.y + viewRect.h
+    ) {
+        return null; // cursor is in the letterboxed / unused canvas area
+    }
 
-  // Position inside the displayed image, normalized.
-  // These are top-left-origin normalized coords over the visible image.
-  const u = (px - viewRect.x) / viewRect.w;
-  const v = (py - viewRect.y) / viewRect.h;
+    // Position inside the displayed image, top-left origin normalized.
+    const u = (px - viewRect.x) / viewRect.w;
+    const v = (py - viewRect.y) / viewRect.h;
 
-  // In your output pass you flip Y with:
-  //   texture(u_image, vec2(v_uv.x, 1.0 - v_uv.y))
-  // so top-left normalized screen coords map directly to the same logical
-  // 0..1 coordinates used by the ingress sampling expression.
-  const [spanX, spanY] = renderer.getViewSpan(viewRect.w, viewRect.h);
+    // In the output pass we flip Y,
+    // so top-left normalized screen coords map directly to the same logical
+    // 0..1 coordinates used by the ingress sampling expression.
+    const [spanX, spanY] = renderer.getViewSpan(viewRect.w, viewRect.h);
 
-  const srcU = renderer.centerX + (u - 0.5) * spanX;
-  const srcV = renderer.centerY + (v - 0.5) * spanY;
+    const srcU = renderer.centerX + (u - 0.5) * spanX;
+    const srcV = renderer.centerY + (v - 0.5) * spanY;
 
-  const [imageW, imageH] = renderer.getSourceSize();
+    const [imageW, imageH] = renderer.getSourceSize();
 
-  // Clamp for safety, matching shader behavior
-  const cu = Math.max(0, Math.min(1, srcU));
-  const cv = Math.max(0, Math.min(1, srcV));
+    const cu = Math.max(0, Math.min(1, srcU));
+    const cv = Math.max(0, Math.min(1, srcV));
 
-  const obj = {
-    srcU: cu,
-    srcV: cv,
-    x: Math.min(imageW - 1, Math.max(0, Math.floor(cu * imageW))),
-    y: Math.min(imageH - 1, Math.max(0, Math.floor(cv * imageH))),
-  };
-  return obj;
+    return {
+        srcU: cu,
+        srcV: cv,
+        x: Math.min(imageW - 1, Math.max(0, Math.floor(cu * imageW))),
+        y: Math.min(imageH - 1, Math.max(0, Math.floor(cv * imageH))),
+    };
 }
 
 const coordOutput = gid("coordOutput");
@@ -248,7 +251,7 @@ function renderCoords(e, renderer, output) {
     if (sourcePixel === null) {
         return;
     }
-    const { x, y } = sourcePixel;
+    const {x, y} = sourcePixel;
     let coordText = `(${Math.floor(x)}, ${Math.floor(y)})`;
     const startIndex = (x + y * renderer.source.width) * renderer.source.channels
     const values = [];
@@ -310,6 +313,9 @@ async function handlePdrUpload(e) {
         const objects = await getProductInfo(firstFile.name);
         if (Object.keys(objects).length === 0) {
             showPDRErrorModal("no arrays found in file");
+            for (const f of e.target.files) {
+                pyodide.FS.unlink(f.name);
+            }
             return;
         }
         pdrProductInfo.name = firstFile.name;
@@ -342,6 +348,24 @@ async function handlePdrUpload(e) {
     }
 }
 
+const closeImageBtn = gid("closeImage")
+
+async function closeImage() {
+    lockApp();
+    lockRender();
+    appRenderer.clearEffectBuffers();
+    appRenderer.clearSourceTextures();
+    appRenderer.source = null;
+    if (pdrProductInfo.name) {
+        await resetPdr();
+    }
+    await drawPattern("blank");
+    unlockRender();
+    unlockApp();
+    requestRender();
+}
+
+closeImageBtn.addEventListener("click", closeImage);
 
 function stopCapture(recorder) {
     recorder.stop();
@@ -361,7 +385,7 @@ function startCapture() {
     const chunks = [];
     recorder.ondataavailable = e => chunks.push(e.data);
     recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: "video/webm" });
+        const blob = new Blob(chunks, {type: "video/webm"});
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -389,7 +413,6 @@ async function exportImage() {
     Lock.image = true;
     const [w, h] = [appRenderer.source.width, appRenderer.source.height]
     const pixels = await appRenderer.applyFullRes(animating ? timePhase : 0);
-    Lock.image = false;
     const imgArr = new Uint8ClampedArray(pixels.length);
     for (let i = 0; i < pixels.length; i++) {
         imgArr[i] = Math.round(pixels[i] * 255);
@@ -399,7 +422,10 @@ async function exportImage() {
     canvas.width = w;
     canvas.height = h;
     canvas.getContext("2d").putImageData(imgData, 0, 0);
-    canvas.toBlob(blob => downloadBlob(blob, vandalStamp('png')), "image/png");
+    canvas.toBlob(blob => downloadBlob(blob, vandalStamp('png')), "image/png")
+    canvas.remove();
+    Lock.image = false;
+    requestRender();
 }
 
 
@@ -559,10 +585,6 @@ async function appSetup() {
     setupStaticButtons(
         handleHTMLUpload,
         handlePdrUpload,
-        addSelectedEffect,
-        saveState,
-        loadState,
-        effectRegistry,
         resetStack,
         requestRender,
         requestUIDraw,
@@ -589,7 +611,6 @@ async function appSetup() {
     //                requestRender, startCapture);
     setupWindow(resizeAndRedraw);
     await drawPattern('spiral');
-    await loadState(getAppPresetView("Blank"), effectRegistry, false);
     setupInputStretch();
     renderLoop();
     uiLoop();
