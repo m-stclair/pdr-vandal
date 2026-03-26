@@ -19,7 +19,7 @@ const fragSources = loadFragSrcInit(shaderPath, includePaths);
 /** @typedef {import('../glitchtypes.ts').EffectModule} EffectModule */
 /** @type {EffectModule} */
 export default {
-    name: "Unsharp",
+    name: "Unsharp Mask",
     defaultConfig: {
         BLENDMODE: BlendModeEnum.MIX,
         BLEND_CHANNEL_MODE: BlendTargetEnum.ALL,

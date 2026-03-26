@@ -100,7 +100,7 @@ export async function drawHueWheel() {
     uploadFromCanvas(ocv, "hue wheel");
 }
 
-async function drawSpiral(numLoops = 5, lineWidth = 2) {
+async function drawSpiral(numLoops = 5, lineWidth = 4) {
     const canvas = new OffscreenCanvas(2048, 2048)
     const context = canvas.getContext('2d');
 
@@ -147,7 +147,7 @@ async function drawSinusoid(amplitude = 512, frequency = 0.05) {
     }
 
     context.strokeStyle = 'black';
-    context.lineWidth = 2;
+    context.lineWidth = 4;
     context.stroke();
     uploadFromCanvas(canvas, "sinusoid")
 }

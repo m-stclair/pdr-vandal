@@ -3,11 +3,11 @@ import {
     // placeholderOption,
     pruneForMobile,
     // setupDragAndDrop,
-    setupExportImage,
+    setupExportImage, setupHelpModal,
     setupPaneDrag, setupPDRErrorModal,
     // setupPresetUI,
     setupStaticButtons,
-    setupVideoCapture,
+    // setupVideoCapture,
     // setupVideoExportModal,
     setupWindow
 } from "./ui.js";
@@ -322,7 +322,6 @@ async function handlePdrUpload(e) {
         pdrProductInfo.files = [...e.target.files].map((f) => f.name);
         lockRender();
         await populatePdrUI();
-        setupInputStretch();
         await handlePdrObjectChange();
         requestUIDraw();
         requestRender();
@@ -581,15 +580,17 @@ async function appSetup() {
     // );
     // setupDragAndDrop(handleHTMLUpload);
     setupExportImage(exportImage);
-    setupVideoCapture(startCapture, stopCapture);
+    // setupVideoCapture(startCapture, stopCapture);
     setupPaneDrag();
     // setupVideoExportModal();
     setupPDRErrorModal(unlockApp);
+    setupHelpModal(lockApp, unlockApp);
     // pruneForMobile(exportImage, loadState, effectRegistry, requestUIDraw,
     //                requestRender, startCapture);
     setupWindow(resizeAndRedraw);
     await drawPattern('spiral');
     await loadState(getAppPresetView("Blank"), effectRegistry, false);
+    setupInputStretch();
     renderLoop();
     uiLoop();
 }

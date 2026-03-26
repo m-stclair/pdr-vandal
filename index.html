@@ -6,7 +6,7 @@
     <link rel="shortcut icon" href="./favicon.ico" type="image/x-icon">
     <meta charset="UTF-8"/>
     <meta name="theme-color" content="#000000">
-    <title>vandal</title>
+    <title>pdr</title>
     <link rel="stylesheet" href="labpage.css">
     <link rel="stylesheet" href="css/effectconfig.css">
     <script type="module" src="glitch.js"></script>
@@ -30,6 +30,41 @@
     <div class="modal-content">
     <p id="pdr-error-modal-content"></p>
     <span class="close-btn" id="close-pdr-error-modal">&times;</span>
+    </div>
+</div>
+
+<div id="help-modal" class="modal">
+    <div id="help-modal-content" class="modal-content" style="margin-top: 2%">
+            <span class="close-btn" id="close-help-modal">&times;</span>
+
+        <h4>Basic Usage</h4>
+        <p>To open an image, click the "Open With PDR" button and select the file or files you wish to open. If
+            this is the first image you've opened with PDR in the session, PDR will install (10-20 seconds). After
+            opening, the image will display in the main pane. You can zoom the image in and out using mouse or
+            touchpad scroll. When zoomed, you can pan the image by dragging.</p>
+        <h4>Switching Bands and Objects</h4>
+        <p>If the product you've uploaded has more than one image (like a FITS file with multiple image HDUs), you can
+            switch between them using the "object" dropdown in the upper right-hand corner. If an image has multiple
+            bands/channels, you can swap between them using the "bands" dropdown immediately below the "object" dropdown.
+            If an image has 3 or 4 bands, the "bands" dropdown will also have an "RGB" option that displays the first
+            three bands stacked to RGB.</p>
+        <h4>Effects</h4>
+        <p>The right-hand pane also contains an "effect picker" and an "effect stack" for visual effects like
+            colormapping. You can add effects by clicking on them in the picker. You can open an effect for editing by
+            clicking on it, and remove it by clicking its X button. The "Input Stretch" effect is always pinned at the
+            top of the stack. This effect can clip or stretch the input range for display before rendering or applying
+            other effects. Images with wide value ranges may not be visible without manipulating this effect.</p>
+        <h4>Image Export</h4>
+        <p>You can save the displayed image, including pan/zoom and visual effects, by clicking the "Export PNG" button
+        in the top bar.</p>
+        <h4>Browser Image Loading</h4>
+        <p>If you want to open a "desktop" format image like a JPEG or PNG, you can open it with standard browser
+            features instead of PDR by clicking the "Open With Browser" button in the top bar. Desktop images will
+            load more quickly this way, but will not support channel flipping or some PDR features like accessing
+            secondary images in MPOs.</p>
+        <h4>Privacy</h4>
+        <p>pdr-vandal runs locally in your browser. It does not upload files to a server for processing. Your files
+            never leave your computer.</p>
     </div>
 </div>
 
@@ -62,7 +97,7 @@
     <input type="file" id="upload" accept = "image/png,image/jpeg,image/webp" style="display: none"/>
 
     ||
-    <button id="exportImage">PNG</button>
+    <button id="exportImage">Export PNG</button>
 <!--    ||-->
 <!--    <button id="openExportControlsModal">Video</button>-->
 <!--    ||-->
@@ -72,7 +107,8 @@
     ||
     <select id="test-pattern-select"></select>
 <!--    || <button id="randomStack">Random</button>-->
-    || <button id="freezeAnimation">freeze</button>
+    || <button id="freezeAnimation">Freeze Animation</button>
+    || <button id="open-help-modal" style="color: lawngreen">Help</button>
 </div>
 
 
@@ -85,7 +121,6 @@
     <div id="rightPane">
         <p id="activeFile" style="margin: 0"></p>
         <div id="coordHolder">
-<!--            <p style="margin: 0">Coordinates &#45;&#45; Value</p>-->
             <div id="coordOutput" style="height: 2em; margin-top: 0">
         </div>
         <div id="pdrUI">

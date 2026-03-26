@@ -227,10 +227,10 @@ export function setupExportImage(exportImage) {
     document.getElementById('exportImage').onclick = exportImage;
 }
 
-export function setupVideoCapture(startCapture, stopCapture) {
-    document.getElementById('startCapture').onclick = () => startCapture();
-    document.getElementById('stopCaptureOverlay').onclick = () => stopCapture();
-}
+// export function setupVideoCapture(startCapture, stopCapture) {
+//     document.getElementById('startCapture').onclick = () => startCapture();
+//     document.getElementById('stopCaptureOverlay').onclick = () => stopCapture();
+// }
 
 export const pdrErrorModal = gid("pdr-error-modal");
 export const pdrErrorModalContent = gid("pdr-error-modal-content");
@@ -243,6 +243,28 @@ export function setupPDRErrorModal(unlockApp) {
         unlockApp();
     });
 }
+
+export function setupHelpModal(lockApp, unlockApp) {
+    const helpModal = gid("help-modal");
+    const helpModalOpenButton = gid("open-help-modal")
+    const helpModalContent = gid("help-modal-content")
+    helpModalOpenButton.addEventListener("click", () => {
+        helpModal.style.display = "block";
+        lockApp();
+    })
+    helpModalContent.addEventListener("click", (e) => e.stopPropagation());
+    helpModal.addEventListener("click", () => {
+        helpModal.style.display = "none";
+        unlockApp();
+    })
+    const helpModalCloseButton = gid("close-help-modal")
+    helpModalCloseButton.addEventListener("click", () => {
+        helpModal.style.display = "none";
+        unlockApp();
+    })
+}
+
+
 
 // export function setupVideoExportModal() {
 //     const modal = document.getElementById("exportControlsModal");

@@ -283,6 +283,35 @@ function createControlGroup(fx, effectStack, uiState, i) {
         requestRender();
     });
 
+    const dupBtn = document.createElement("button");
+    dupBtn.textContent = "⧉";
+    dupBtn.title = "Duplicate effect";
+    dupBtn.className = "effectButton";
+    dupBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const newFx = makeEffectInstance(effectRegistry[fx.name]);
+        await newFx.ready;
+        newFx.config = structuredClone(fx.config);
+        effectStack.splice(i + 1, 0, newFx);
+        requestUIDraw();
+        requestRender();
+    });
+
+    const delBtn = document.createElement('button');
+    delBtn.textContent = '×';
+    delBtn.className = "effectButton";
+    delBtn.disabled = fx.pinned;
+    delBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (fx.cleanupHook) {
+            fx.cleanupHook(fx);
+        }
+        effectStack.splice(i, 1);
+        clearRenderCache();
+        requestUIDraw();
+        requestRender();
+    });
+
     const upBtn = document.createElement("button");
     upBtn.textContent = "↑";
     upBtn.title = "Move up";
@@ -307,21 +336,6 @@ function createControlGroup(fx, effectStack, uiState, i) {
         requestRender();
     });
 
-    const dupBtn = document.createElement("button");
-    dupBtn.textContent = "⧉";
-    dupBtn.disabled = fx.pinned;
-    dupBtn.title = "Duplicate effect";
-    dupBtn.className = "effectButton";
-    dupBtn.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        const newFx = makeEffectInstance(effectRegistry[fx.name]);
-        await newFx.ready;
-        newFx.config = structuredClone(fx.config);
-        effectStack.splice(i + 1, 0, newFx);
-        requestUIDraw();
-        requestRender();
-    });
-
     const resetBtn = document.createElement("button");
     resetBtn.textContent = "⟲";
     resetBtn.title = "Reset effect";
@@ -333,24 +347,13 @@ function createControlGroup(fx, effectStack, uiState, i) {
         requestRender();
     });
 
-    const delBtn = document.createElement('button');
-    delBtn.textContent = '×';
-    delBtn.className = "effectButton";
-    delBtn.disabled = fx.pinned;
-    delBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (fx.cleanupHook) {
-            fx.cleanupHook(fx);
-        }
-        effectStack.splice(i, 1);
-        clearRenderCache();
-        requestUIDraw();
-        requestRender();
-    });
-
     const controlGroup = document.createElement("div");
     controlGroup.className = "controlGroup";
-    controlGroup.append(enableToggle, soloToggle, upBtn, downBtn, dupBtn, resetBtn, delBtn);
+    if (!fx.pinned) {
+        controlGroup.append(enableToggle, soloToggle, upBtn, downBtn, dupBtn, resetBtn, delBtn);
+    } else {
+        controlGroup.append(enableToggle, soloToggle, resetBtn);
+    }
     return controlGroup;
 }
 
