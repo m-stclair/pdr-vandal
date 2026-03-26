@@ -85,6 +85,7 @@ async function resetPdr() {
         pdrProductInfo.files = undefined;
     }
     pdrProductInfo.name = undefined;
+    gid("pdrUI").style.display = "none"
 }
 
 async function handlePdrBandSelect() {
