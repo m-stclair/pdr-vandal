@@ -590,25 +590,11 @@ async function appSetup() {
         requestUIDraw,
         setFreezeAnimationButtonFlag
     );
-    // setupPresetUI(
-    //     saveState,
-    //     loadState,
-    //     resetStack,
-    //     requestRender,
-    //     requestUIDraw,
-    //     effectRegistry,
-    //     lockRender,
-    //     unlockRender
-    // );
-    // setupDragAndDrop(handleHTMLUpload);
     setupExportImage(exportImage);
     // setupVideoCapture(startCapture, stopCapture);
     setupPaneDrag();
-    // setupVideoExportModal();
     setupPDRErrorModal(unlockApp);
     setupHelpModal(lockApp, unlockApp);
-    // pruneForMobile(exportImage, loadState, effectRegistry, requestUIDraw,
-    //                requestRender, startCapture);
     setupWindow(resizeAndRedraw);
     await drawPattern('spiral');
     setupInputStretch();

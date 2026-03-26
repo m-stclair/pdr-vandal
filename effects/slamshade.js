@@ -124,7 +124,7 @@ export default {
 export const effectMeta = {
   group: "Utility",
   tags: ["color", "brightness", "contrast", "saturation"],
-  description: "Adjusts brightness, contrast, and saturation.",
+  description: "Creates slope maps, curvature maps, and hillshade-like effects from discrete differences.",
   backend: "gpu",
   canAnimate: true,
   realtimeSafe: true,

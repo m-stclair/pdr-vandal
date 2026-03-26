@@ -631,7 +631,7 @@ def get_array_image(
       - scaling metadata
       - dimensions and channel count
       - summary statistics in normalized space
-  """
+   """
     try:
         result = load_if_required(path)
         if not result.ok:
