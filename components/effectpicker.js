@@ -25,8 +25,6 @@ export class EffectPicker extends HTMLElement {
 
         // Now safe to access DOM elements
         this.searchInput = this.shadow.getElementById("search-input");
-        // this.tagToggle = this.shadow.getElementById("tag-toggle");
-        // this.tagFilters = this.shadow.getElementById("tag-filters");
         this.effectList = this.shadow.getElementById("effect-list");
         this.groupIsOpen = {}
         this.initEffectBrowser();

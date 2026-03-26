@@ -15,7 +15,7 @@ void main() {
     gl_Position = vec4(a_position, 0.0, 1.0);
 }`
 
-const htmlIngressFragSrc = `#version 300 es
+const rgbaIngressFragSrc = `#version 300 es
 precision mediump float;
 
 uniform sampler2D u_source;
@@ -139,49 +139,73 @@ export class GlitchRenderer {
         return [this.source.width, this.source.height];
     }
 
+    clearSourceTextures() {
+        if (this.sourceTexture) {
+            this.gl.deleteTexture(this.sourceTexture);
+            this.sourceTexture = null;
+        }
+        if (this.inputTexture) {
+            this.gl.deleteTexture(this.inputTexture);
+            this.inputTexture = null;
+        }
+        this.inputDirty = true;
+    }
+
     setHTMLSource(img) {
         const width = img.naturalWidth ?? img.videoWidth ?? img.width;
         const height = img.naturalHeight ?? img.videoHeight ?? img.height;
 
+        if (!width || !height) {
+            throw new Error("setHTMLSource: source has invalid dimensions");
+        }
+
+        // Reuse a scratch canvas/context for readback.
+        if (!this._readbackCanvas) {
+            this._readbackCanvas =
+                typeof OffscreenCanvas !== "undefined"
+                    ? new OffscreenCanvas(width, height)
+                    : document.createElement("canvas");
+        }
+
+        const canvas = this._readbackCanvas;
+        canvas.width = width;
+        canvas.height = height;
+
+        if (!this._readbackCtx) {
+            this._readbackCtx = canvas.getContext("2d", { willReadFrequently: true });
+        }
+
+        const ctx = this._readbackCtx;
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+
+        const imageData = ctx.getImageData(0, 0, width, height);
+
         this.source = {
-            kind: "html",
+            kind: "rgba8",
+            channels: 4,
             width,
             height,
-            image: img,
-            data: null,
+            scale: 1,
+            offset: 0,
+            data: imageData.data,
         };
 
-        if (this.sourceTexture) {
-            this.gl.deleteTexture(this.sourceTexture);
-            this.sourceTexture = null;
-        }
-        if (this.inputTexture) {
-            this.gl.deleteTexture(this.inputTexture);
-            this.inputTexture = null;
-        }
-
-        this.inputDirty = true;
+        this.clearSourceTextures();
     }
 
-    setFloat32Source(f32Array, width, height, channels) {
+
+    setFloat32Source(f32Array, width, height, channels, scale, offset) {
         this.source = {
             kind: channels === 1 ? "r32f" : "rgb32f",
+            channels: channels,
             width,
             height,
-            image: null,
+            scale,
+            offset,
             data: f32Array,
         };
-
-        if (this.sourceTexture) {
-            this.gl.deleteTexture(this.sourceTexture);
-            this.sourceTexture = null;
-        }
-        if (this.inputTexture) {
-            this.gl.deleteTexture(this.inputTexture);
-            this.inputTexture = null;
-        }
-
-        this.inputDirty = true;
+        this.clearSourceTextures();
     }
 
 
@@ -221,11 +245,11 @@ export class GlitchRenderer {
     compileIngressPrograms() {
         const gl = this.gl;
 
-        const htmlProgram = this.compileProgram(ingressVertSrc, htmlIngressFragSrc);
-        const htmlUniforms = {
-            source: gl.getUniformLocation(htmlProgram, "u_source"),
-            viewSpan: gl.getUniformLocation(htmlProgram, "u_viewSpan"),
-            center: gl.getUniformLocation(htmlProgram, "u_center"),
+        const rgbaProgram = this.compileProgram(ingressVertSrc, rgbaIngressFragSrc);
+        const rgbaUniforms = {
+            source: gl.getUniformLocation(rgbaProgram, "u_source"),
+            viewSpan: gl.getUniformLocation(rgbaProgram, "u_viewSpan"),
+            center: gl.getUniformLocation(rgbaProgram, "u_center"),
         };
 
         const f32RGBProgram = this.compileProgram(ingressVertSrc, floatRGBIngressFragSrc);
@@ -242,7 +266,7 @@ export class GlitchRenderer {
             center: gl.getUniformLocation(f32GrayProgram, "u_center"),
         };
         return {
-            html: { program: htmlProgram, uniforms: htmlUniforms },
+            rgba8: { program: rgbaProgram, uniforms: rgbaUniforms },
             rgb32f: { program: f32RGBProgram, uniforms: f32RGBUniforms },
             r32f: { program: f32GrayProgram, uniforms: f32GrayUniforms }
         };
@@ -356,8 +380,7 @@ export class GlitchRenderer {
         this.fxbuffers[id] = undefined;
     }
 
-    make_framebuffer(width, height, id, name, format=null) {
-        const fmt = format ?? this.format;
+    make_framebuffer(width, height, id, name) {
         const gl = this.gl;
         const tex = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -553,46 +576,8 @@ export class GlitchRenderer {
         });
     }
 
-    buildHTMLSourceTexture() {
-        if (!this.source || this.source.kind !== "html") return false;
-
-        const gl = this.gl;
-        if (this.sourceTexture) {
-            gl.deleteTexture(this.sourceTexture);
-            this.sourceTexture = null;
-        }
-
-        const tex = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, tex);
-
-        gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, false);
-
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-        gl.texImage2D(
-            gl.TEXTURE_2D,
-            0,
-            gl.RGBA,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            this.source.image
-        );
-
-        gl.generateMipmap(gl.TEXTURE_2D);
-        gl.bindTexture(gl.TEXTURE_2D, null);
-
-        this.sourceTexture = tex;
-        return true;
-    }
-
-    buildFloatSourceTexture() {
-        if (
-            !this.source
-            || (this.source.kind !== "rgb32f" && this.source.kind !== "r32f")
-        ) return false;
+    buildSourceTexture() {
+        if (!this.source) return false;
 
         const gl = this.gl;
         if (this.sourceTexture) {
@@ -625,9 +610,16 @@ export class GlitchRenderer {
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB32F,
                           this.source.width, this.source.height, 0,
                           gl.RGB, gl.FLOAT, this.source.data);
+        } else if (this.source.kind === "rgba8") {
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA,
+                          this.source.width, this.source.height, 0,
+                          gl.RGBA, gl.UNSIGNED_BYTE, this.source.data
+        );
+
         } else {
             throw new Error(`Unrecognized source kind ${this.source.kind}`)
         }
+
 
         const filter = this.floatLinear ? gl.LINEAR : gl.NEAREST;
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
@@ -780,18 +772,6 @@ export class GlitchRenderer {
         this.inputWidth = w;
         this.inputHeight = h;
         return true;
-    }
-
-    buildSourceTexture() {
-        if (!this.source) return false;
-
-        if (this.source.kind === "html") {
-            return this.buildHTMLSourceTexture();
-        }
-        else if (this.source.kind === "rgb32f" || this.source.kind === "r32f") {
-            return this.buildFloatSourceTexture();
-        }
-        throw new Error(`Unknown source kind: ${this.source.kind}`);
     }
 
     writeToCanvas(tex) {

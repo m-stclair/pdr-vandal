@@ -292,7 +292,6 @@ export function pruneForMobile(exportImage, loadState, registry,
     gid("leftPane").style.maxWidth = '100%';
     gid("leftPane").style.flexGrow = 1;
     gid("leftPane").style.flexShrink = 0;
-    console.log('beep');
     const topBar = gid("topBar");
     topBar.innerHTML = `
         <button id="startCapture" title="Download WebM">🎥</button>

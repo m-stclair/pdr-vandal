@@ -26,7 +26,7 @@ import {
     loadState,
     Lock,
     makeEffectInstance,
-    renderer,
+    appRenderer,
     requestRender,
     requestUIDraw,
     resetStack,
@@ -65,25 +65,10 @@ function handleHTMLUpload(e) {
 
     const img = new Image();
     img.onload = () => {
-        renderer.setHTMLSource(img);
+        appRenderer.setHTMLSource(img);
         resizeAndRedraw();
     }
     img.src = URL.createObjectURL(file);
-}
-
-function pixelsToImage(pdrResult, callbackFactory) {
-    const {pixels, width, height} = pdrResult;
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const clamped = new Uint8ClampedArray(pixels);
-    canvas.getContext('2d').putImageData(new ImageData(clamped, width, height), 0, 0);
-    const img = new Image();
-    if (callbackFactory) {
-        img.onload = callbackFactory(img);
-    }
-    img.src = canvas.toDataURL();
-    return img;
 }
 
 const dataObjectSelect = gid("data-object-select");
@@ -109,7 +94,9 @@ async function handlePdrBandSelect() {
             return;
         }
 
-        renderer.setFloat32Source(arrayData.pixels, arrayData.width, arrayData.height, arrayData.channels);
+        appRenderer.setFloat32Source(arrayData.pixels, arrayData.width,
+                                     arrayData.height, arrayData.channels,
+                                     arrayData.scale, arrayData.offset);
         inputStretchEffect.auxiliaryCache.mean = arrayData.mean;
         inputStretchEffect.auxiliaryCache.std = arrayData.std;
         inputStretchEffect.auxiliaryCache.p02 = arrayData.p02;
@@ -129,7 +116,7 @@ async function handlePdrObjectChange() {
     if (objInfo === undefined) {
         throw new Error(`${objname} not in product`)
     }
-    const maxDimension = renderer.gl.getParameter(renderer.gl.MAX_TEXTURE_SIZE);
+    const maxDimension = appRenderer.gl.getParameter(appRenderer.gl.MAX_TEXTURE_SIZE);
     if (objInfo.width > maxDimension || objInfo.height > maxDimension) {
         showPDRErrorModal(
             `Array too large for this browser (max dimension is ${maxDimension}).`
@@ -198,6 +185,85 @@ function delayNextPaint() {
         )
     );
 }
+
+function eventToSourcePixel(e, renderer) {
+  const gl = renderer.gl;
+  const canvas = gl.canvas;
+  const rect = canvas.getBoundingClientRect();
+
+  // Event -> drawing buffer pixels, top-left origin
+  const px = (e.clientX - rect.left) * (canvas.width / rect.width);
+  const py = (e.clientY - rect.top)  * (canvas.height / rect.height);
+
+  // Canvas -> displayed image rect
+  const viewRect = renderer.getViewRect();
+  if (
+    px < viewRect.x ||
+    px >= viewRect.x + viewRect.w ||
+    py < viewRect.y ||
+    py >= viewRect.y + viewRect.h
+  ) {
+    return null; // cursor is in the letterboxed / unused canvas area
+  }
+
+  // Position inside the displayed image, normalized.
+  // These are top-left-origin normalized coords over the visible image.
+  const u = (px - viewRect.x) / viewRect.w;
+  const v = (py - viewRect.y) / viewRect.h;
+
+  // In your output pass you flip Y with:
+  //   texture(u_image, vec2(v_uv.x, 1.0 - v_uv.y))
+  // so top-left normalized screen coords map directly to the same logical
+  // 0..1 coordinates used by the ingress sampling expression.
+  const [spanX, spanY] = renderer.getViewSpan(viewRect.w, viewRect.h);
+
+  const srcU = renderer.centerX + (u - 0.5) * spanX;
+  const srcV = renderer.centerY + (v - 0.5) * spanY;
+
+  const [imageW, imageH] = renderer.getSourceSize();
+
+  // Clamp for safety, matching shader behavior
+  const cu = Math.max(0, Math.min(1, srcU));
+  const cv = Math.max(0, Math.min(1, srcV));
+
+  const obj = {
+    srcU: cu,
+    srcV: cv,
+    x: Math.min(imageW - 1, Math.max(0, Math.floor(cu * imageW))),
+    y: Math.min(imageH - 1, Math.max(0, Math.floor(cv * imageH))),
+  };
+  return obj;
+}
+
+const coordOutput = gid("coordOutput");
+
+function renderCoords(e, renderer, output) {
+    if (!renderer.source?.data) {
+        return;
+    }
+    const sourcePixel = eventToSourcePixel(e, renderer);
+    if (sourcePixel === null) {
+        return;
+    }
+    const { x, y } = sourcePixel;
+    let coordText = `(${Math.floor(x)}, ${Math.floor(y)})`;
+    const startIndex = (x + y * renderer.source.width) * renderer.source.channels
+    const values = [];
+    for (let i = 0; i < renderer.source.channels; i++) {
+        const value = renderer.source.data[startIndex + i];
+        const unscaled = value * renderer.source.scale + renderer.source.offset;
+        const displayPrecision = 4 + Math.log10(unscaled);
+        values.push(formatFloatWidth(unscaled, displayPrecision));
+    }
+    const valText = values.join(", ");
+    output.innerText = `${coordText} -- ${valText}`;
+}
+
+
+appRenderer.gl.canvas.addEventListener(
+    'mousemove', (e) => renderCoords(e, appRenderer, coordOutput)
+)
+
 
 function lockApp() {
     appRoot.inert = true;
@@ -284,7 +350,7 @@ function startCapture() {
     const exportDuration = document.getElementById("exportDuration").value;
     const exportFPS = document.getElementById("exportFPS").value;
 
-    const stream = renderer.gl.canvas.captureStream(exportFPS);
+    const stream = appRenderer.gl.canvas.captureStream(exportFPS);
     const options = {
         mimeType: 'video/webm; codecs=vp9',
         videoBitsPerSecond: 16_000_000,
@@ -319,8 +385,8 @@ export function isModulating(fx) {
 
 async function exportImage() {
     Lock.image = true;
-    const [w, h] = [renderer.source.width, renderer.source.height]
-    const pixels = await renderer.applyFullRes(animating ? timePhase : 0);
+    const [w, h] = [appRenderer.source.width, appRenderer.source.height]
+    const pixels = await appRenderer.applyFullRes(animating ? timePhase : 0);
     Lock.image = false;
     const imgArr = new Uint8ClampedArray(pixels.length);
     for (let i = 0; i < pixels.length; i++) {
@@ -379,9 +445,9 @@ function firePipeline(ctx = defaultCtx, t = null) {
     } else {
         time = t;
     }
-    if (!renderer.source) return;
-    const finalTexture = renderer.applyEffects(time);
-    renderer.writeToCanvas(finalTexture);
+    if (!appRenderer.source) return;
+    const finalTexture = appRenderer.applyEffects(time);
+    appRenderer.writeToCanvas(finalTexture);
 }
 
 
@@ -485,7 +551,7 @@ async function appSetup() {
         effectStack.classList.toggle('collapsed');
         toggleBar.classList.toggle('collapsed');
     });
-    await setupStaticButtons(
+    setupStaticButtons(
         handleHTMLUpload,
         handlePdrUpload,
         addSelectedEffect,
@@ -513,8 +579,8 @@ async function appSetup() {
     setupPaneDrag();
     // setupVideoExportModal();
     setupPDRErrorModal(unlockApp);
-    pruneForMobile(exportImage, loadState, effectRegistry, requestUIDraw,
-                   requestRender, startCapture);
+    // pruneForMobile(exportImage, loadState, effectRegistry, requestUIDraw,
+    //                requestRender, startCapture);
     setupWindow(resizeAndRedraw);
     await drawPattern('spiral');
     await loadState(getAppPresetView("Blank"), effectRegistry, false);

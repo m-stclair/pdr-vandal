@@ -11,7 +11,7 @@ export const requestRender = () => Dirty.image = true;
 export const requestUIDraw = () => Dirty.ui = true;
 export const requestRedraw = () => {
     Dirty.image = true;
-    renderer.inputDirty = true;
+    appRenderer.inputDirty = true;
 }
 
 // shared rendering objects
@@ -19,15 +19,15 @@ export const canvas = document.getElementById('glitchCanvas');
 canvas.style.willChange = 'transform';
 export const defaultCtx = canvas.getContext("webgl2", { alpha: false, antialias: true });
 
-export const renderer = new GlitchRenderer(defaultCtx);
+export const appRenderer = new GlitchRenderer(defaultCtx);
 export function clearRenderCache() {
-    renderer.renderCache.clear();
+    appRenderer.renderCache.clear();
 }
 
 canvas.addEventListener(
     "wheel", (e) => {
         e.preventDefault();
-        renderer.setZoom(e.deltaY);
+        appRenderer.setZoom(e.deltaY);
         requestRender();
     },
     { passive: false }
@@ -68,7 +68,7 @@ class PanInterface {
     };
 }
 
-const panInterface = new PanInterface(renderer);
+const panInterface = new PanInterface(appRenderer);
 
 canvas.addEventListener("pointerdown", panInterface.onPointerDown);
 canvas.addEventListener("pointermove", panInterface.onPointerMove);
@@ -143,7 +143,7 @@ export function flushEffectStack() {
             }
         })
     effectStack.length = 0;
-    if (renderer.source.kind === "rgba32f") {
+    if (appRenderer.source.kind === "rgba32f") {
         // never get rid of the singleton input stretch
         addEffectToStack(inputStretchEffect);
     }
@@ -180,9 +180,9 @@ export function makeEffectInstance(mod) {
         isGPU: mod.isGPU
     }
     if (mod.isGPU) {
-        instance.glState = new webGLState(renderer, mod.name, instance.id)
+        instance.glState = new webGLState(appRenderer, mod.name, instance.id)
     }
-    const hook = mod.initHook?.(instance, renderer);
+    const hook = mod.initHook?.(instance, appRenderer);
     instance.ready = hook?.then ? hook : Promise.resolve();
     return instance;
 }
@@ -254,7 +254,7 @@ export function resizeAndRedraw() {
         const height = window.innerHeight * 0.9;
         canvas.width = width;
         canvas.height = height;
-        renderer.inputDirty = true;
+        appRenderer.inputDirty = true;
         requestRender();
     } finally {
         Lock.image = false;
@@ -263,15 +263,15 @@ export function resizeAndRedraw() {
 
 
 export function resetStack() {
-    renderer.reset_pipeline();
+    appRenderer.reset_pipeline();
     flushEffectStack();
     requestUIDraw();
 }
 
 export function lockRender() {
-    renderer.lock();
+    appRenderer.lock();
 }
 
 export function unlockRender() {
-    renderer.unlock();
+    appRenderer.unlock();
 }
