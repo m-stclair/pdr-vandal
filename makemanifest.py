@@ -1,20 +1,7 @@
 import datetime as dt
 import os
 
-ROOT_INCLUDE = [
-    # "index.html",
-    # "favicon.ico",
-    # "labpage.css",
-    # "registry.js",
-    # "state.js",
-    # "test_patterns.js",
-    # "ui.js",
-    # "ui_builder.js",
-    # "widgets.js",
-    # "cache-worker.js",
-    # "manifest.json",
-    # "big_icon.png"
-]
+ROOT_INCLUDE = []
 
 def findish():
     manifest_entries = []
@@ -57,6 +44,7 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
+  const url = new URL(req.url); 
   if (req.method !== 'GET') return;
 
   // Network-first for HTML/navigation
@@ -83,7 +71,7 @@ self.addEventListener('fetch', (event) => {
 
     const fresh = await fetch(req);
     const cache = await caches.open(CACHE_NAME);
-    cache.put(req, fresh.clone());
+    await cache.put(req, fresh.clone());
     return fresh;
   })());
 });
