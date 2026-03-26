@@ -53,6 +53,8 @@ let animating = false;
 let startTime = null;
 let timePhase = 0;
 
+const dataObjectSelect = gid("data-object-select");
+const imageBandSelect = gid("image-band-select");
 
 function handleHTMLUpload(e) {
     let file;
@@ -66,13 +68,12 @@ function handleHTMLUpload(e) {
     const img = new Image();
     img.onload = () => {
         appRenderer.setHTMLSource(img);
+        gid("pdrUI").style.display = "none"
         resizeAndRedraw();
     }
+    gid("activeFile").innerText = file.name;
     img.src = URL.createObjectURL(file);
 }
-
-const dataObjectSelect = gid("data-object-select");
-const imageBandSelect = gid("image-band-select");
 
 // info for 'active' product
 let pdrProductInfo = {};
@@ -101,6 +102,7 @@ async function handlePdrBandSelect() {
         inputStretchEffect.auxiliaryCache.std = arrayData.std;
         inputStretchEffect.auxiliaryCache.p02 = arrayData.p02;
         inputStretchEffect.auxiliaryCache.p98 = arrayData.p98;
+        gid("activeFile").innerText = pdrProductInfo.name;
         resizeAndRedraw();
     } catch (err) {
         showPDRErrorModal(err);
@@ -166,6 +168,7 @@ async function populatePdrUI() {
         }
     )
     dataObjectSelect.options[0].selected = true;
+    gid("pdrUI").style.display = "block"
 }
 
 function setupInputStretch() {
@@ -463,18 +466,6 @@ function renderImage() {
     }
 }
 
-async function addSelectedEffect(effectName) {
-    if (!effectName) return;
-    const fx = makeEffectInstance(effectRegistry[effectName]);
-    await fx.ready;
-    addEffectToStack(fx);
-    toggleEffectSelection(fx);
-    clearRenderCache()
-    requestUIDraw();
-    requestRender();
-}
-
-
 function watchRender() {
     if (Lock.image || !Dirty.image) return;
     Lock.image = true;
@@ -509,6 +500,21 @@ const loopIDs = {};
 const renderLoop = rafScheduler(watchRender, "render", loopIDs);
 const uiLoop = rafScheduler(watchUI, "ui", loopIDs);
 
+
+async function addSelectedEffect(effectName) {
+    if (!effectName) return;
+    const fx = makeEffectInstance(effectRegistry[effectName]);
+    await fx.ready;
+    addEffectToStack(fx);
+    toggleEffectSelection(fx);
+    const toggleBar = document.getElementById('toggle-stack-bar');
+    const effectStack = document.getElementById('effectStack');
+    effectStack.classList.remove('collapsed');
+    toggleBar.classList.add('collapsed');
+    clearRenderCache()
+    requestUIDraw();
+    requestRender();
+}
 
 async function appSetup() {
     const workerURL = new URL(`./cache-worker.js`, import.meta.url);

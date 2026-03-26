@@ -32,7 +32,7 @@ const effectFiles = [
     // "fir.js",
     // "delayline.js",
     // "affine_transform.js",
-    // "channelmixer.js",
+    "channelmixer.js",
     // "matrix_channelmixer.js",
     // "perlin_distort.js",
     // "noisemixer.js",
@@ -54,7 +54,8 @@ const effectFiles = [
     // "fieldParentheses.js",
     // "threshold.js",
     "inputstretch.js",
-    "fill_nan.js"
+    "fill_nan.js",
+    "unsharp.js"
 ]
 import {makeRegistryEntry} from "./utils/registry_utils.js";
 

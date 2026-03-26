@@ -43,7 +43,8 @@ ivec2 uvToCoord(vec2 uv) {
 float fetchField(ivec2 p) {
     ivec2 sz = fieldSize();
     p = clamp(p, ivec2(0), sz - 1);
-    return texelFetch(u_image, p, 0).r;
+    vec3 texel = texelFetch(u_image, p, 0).rgb;
+    return (texel.r + texel.g + texel.b) / 3.0;
 }
 
 float metricCombine(float a, float b) {

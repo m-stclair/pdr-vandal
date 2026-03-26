@@ -5,16 +5,13 @@ out vec4 outColor;
 
 uniform sampler2D u_image;
 
-// precomputed on CPU: (sin(azimuth), cos(azimuth))
 uniform vec2 u_hillDir;
 
-// blend controls
 uniform float u_rawAmount;
 uniform float u_slopeAmount;
 uniform float u_slamAmount;
 uniform float u_hillAmount;
 
-// optional global gain
 uniform float u_outScale;
 
 uniform vec2 u_resolution;
@@ -46,10 +43,9 @@ ivec2 uvToCoord(vec2 uv) {
 float fetchField(ivec2 p) {
     ivec2 sz = fieldSize();
     p = clamp(p, ivec2(0), sz - 1);
-    return texelFetch(u_image, p, 0).r;
+    vec3 texel = texelFetch(u_image, p, 0).rgb;
+    return (texel.r + texel.g + texel.b) / 3.0;
 }
-
-// TODO: maybe -- compile-time branch these
 
 float metricCombine(float a, float b) {
 
@@ -95,8 +91,8 @@ void main() {
     float hill  = metricCombine(dy * u_hillDir.y, dx * u_hillDir.x);
 
     float v =
-        u_rawAmount   * raw * RAWSCALE+
-        u_slopeAmount * slope * SLOPESCALE+
+        u_rawAmount   * raw * RAWSCALE +
+        u_slopeAmount * slope * SLOPESCALE +
         u_slamAmount  * slam * SLAMSCALE +
         u_hillAmount  * hill * HILLSCALE;
 

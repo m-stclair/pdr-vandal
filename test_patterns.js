@@ -4,7 +4,7 @@ import {hsv2Rgb} from "./utils/colorutils.js";
 import {placeholderOption} from "./ui.js";
 
 
-function uploadFromCanvas(ocv) {
+function uploadFromCanvas(ocv, name="") {
     ocv.convertToBlob().then(blob => {
         const url = URL.createObjectURL(blob);
         const img = new Image(ocv.width, ocv.height);
@@ -17,6 +17,7 @@ function uploadFromCanvas(ocv) {
     }).catch(error => {
         console.error("Failed to convert OffscreenCanvas to Blob:", error);
     });
+    gid("activeFile").innerText = `${name} test pattern`;
 }
 
 export async function drawSquare(color='black') {
@@ -24,7 +25,7 @@ export async function drawSquare(color='black') {
     const ctx = ocv.getContext('2d')
     ctx.fillStyle = color;
     ctx.fillRect(0, 0, 2048, 2048);
-    uploadFromCanvas(ocv);
+    uploadFromCanvas(ocv, color);
 }
 
 export async function drawRGBSquares() {
@@ -48,7 +49,7 @@ export async function drawRGBSquares() {
             squareSize
         );
     });
-    uploadFromCanvas(ocv);
+    uploadFromCanvas(ocv, "RGB square");
 }
 
 export async function drawGrayscaleRamp() {
@@ -60,7 +61,7 @@ export async function drawGrayscaleRamp() {
     grad.addColorStop(1, 'white');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, ocv.width, ocv.height);
-    uploadFromCanvas(ocv);
+    uploadFromCanvas(ocv, "gray ramp");
 }
 
 export async function drawHueWheel() {
@@ -96,10 +97,10 @@ export async function drawHueWheel() {
         }
     }
     context.putImageData(imageData, 0, 0);
-    uploadFromCanvas(ocv);
+    uploadFromCanvas(ocv, "hue wheel");
 }
 
-function drawSpiral(numLoops = 5, lineWidth = 2) {
+async function drawSpiral(numLoops = 5, lineWidth = 2) {
     const canvas = new OffscreenCanvas(2048, 2048)
     const context = canvas.getContext('2d');
 
@@ -126,10 +127,10 @@ function drawSpiral(numLoops = 5, lineWidth = 2) {
     context.lineWidth = lineWidth;
     context.strokeStyle = 'black';
     context.stroke();
-    uploadFromCanvas(canvas);
+    uploadFromCanvas(canvas, "spiral");
 }
 
-function drawSinusoid(amplitude = 512, frequency = 0.05) {
+async function drawSinusoid(amplitude = 512, frequency = 0.05) {
     const canvas = new OffscreenCanvas(2048, 2048)
     const context = canvas.getContext('2d');
 
@@ -148,7 +149,7 @@ function drawSinusoid(amplitude = 512, frequency = 0.05) {
     context.strokeStyle = 'black';
     context.lineWidth = 2;
     context.stroke();
-    uploadFromCanvas(canvas);
+    uploadFromCanvas(canvas, "sinusoid")
 }
 
 export async function drawPattern(pattern) {
@@ -161,21 +162,24 @@ export async function drawPattern(pattern) {
             return;
         case "rgb":
             await drawRGBSquares();
-            return;
+            break;
         case "gray":
             await drawGrayscaleRamp();
-            return;
+            break;
         case "wheel":
             await drawHueWheel();
-            return;
+            break;
         case "spiral":
             await drawSpiral(12, 4);
-            return;
+            break;
         case "sinusoid":
             await drawSinusoid();
-            return;
+            break;
+        default:
+            throw new Error(`unknown pattern ${pattern}`);
+
     }
-    throw new Error(`unknown pattern ${pattern}`)
+
 }
 
 
