@@ -24,6 +24,8 @@ export function clearRenderCache() {
     appRenderer.renderCache.clear();
 }
 
+export const activeFile = [];
+
 canvas.addEventListener(
     "wheel", (e) => {
         e.preventDefault();

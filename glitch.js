@@ -26,7 +26,8 @@ import {
     resetStack,
     resizeAndRedraw,
     toggleEffectSelection,
-    uiState, setFreezeAnimationButtonFlag, lockRender, unlockRender
+    uiState, setFreezeAnimationButtonFlag, lockRender, unlockRender,
+    activeFile
 } from "./state.js";
 // import "./tools/debugPane.js";
 import {downloadBlob, formatFloatWidth, gid, vandalStamp} from "./utils/helpers.js";
@@ -65,6 +66,7 @@ function handleHTMLUpload(e) {
         resizeAndRedraw();
     }
     gid("activeFile").innerText = file.name;
+    activeFile[0] = file.name;
     img.src = URL.createObjectURL(file);
 }
 
@@ -131,6 +133,7 @@ async function handlePdrBandSelect() {
         auxCache.scale = arrayData.scale;
         auxCache.offset = arrayData.offset;
         gid("activeFile").innerText = pdrProductInfo.name;
+        activeFile[0] = pdrProductInfo.name;
         resizeAndRedraw();
     } catch (err) {
         showPDRErrorModal(err);
@@ -451,7 +454,7 @@ async function exportImage() {
     canvas.width = w;
     canvas.height = h;
     canvas.getContext("2d").putImageData(imgData, 0, 0);
-    canvas.toBlob(blob => downloadBlob(blob, vandalStamp('png')), "image/png")
+    canvas.toBlob(blob => downloadBlob(blob, vandalStamp(activeFile[0], 'png')), "image/png")
     canvas.remove();
     Lock.image = false;
     requestRender();

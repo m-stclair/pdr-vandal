@@ -1,4 +1,4 @@
-import {clearRenderCache, resizeAndRedraw, appRenderer} from "./state.js";
+import {clearRenderCache, resizeAndRedraw, appRenderer, activeFile} from "./state.js";
 import {gid} from "./utils/helpers.js";
 import {hsv2Rgb} from "./utils/colorutils.js";
 import {placeholderOption} from "./ui.js";
@@ -18,6 +18,7 @@ function uploadFromCanvas(ocv, name="") {
         console.error("Failed to convert OffscreenCanvas to Blob:", error);
     });
     gid("activeFile").innerText = `${name} test pattern`;
+    activeFile[0] = `${name} test pattern`;
 }
 
 export async function drawSquare(color='black') {

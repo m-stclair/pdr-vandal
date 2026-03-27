@@ -184,8 +184,15 @@ export function downloadBlob(blob, filename) {
     URL.revokeObjectURL(url);
 }
 
-export function vandalStamp(ext) {
+function getFilenameStem(filename) {
+  const lastDot = filename.lastIndexOf('.');
+  if (lastDot === -1 || lastDot === 0) return filename;
+  return filename.slice(0, lastDot);
+}
+
+export function vandalStamp(originalName, ext) {
     const date = new Date();
+    const stem = getFilenameStem(originalName);
     const timestamp = date.toISOString().replace(/[^0-9]/g, '');
-    return `vandal_${timestamp}.${ext}`
+    return `${stem}_pdrview_${timestamp}.${ext}`
 }
