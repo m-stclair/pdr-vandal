@@ -20,7 +20,7 @@ export default {
         mix2: [0, 1, 0],
         mix3: [0, 0, 1],
         offset: [0, 0, 0],
-        COLORSPACE: ColorspaceEnum.Lab
+        COLORSPACE: ColorspaceEnum.RGB
     },
 
     apply(instance, inputTex, width, height, t, outputFBO) {
