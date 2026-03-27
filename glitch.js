@@ -104,12 +104,34 @@ async function handlePdrBandSelect() {
         }
 
         appRenderer.setFloat32Source(arrayData.pixels, arrayData.width,
-            arrayData.height, arrayData.channels,
-            arrayData.scale, arrayData.offset);
+                                     arrayData.height, arrayData.channels,
+                                     arrayData.scale, arrayData.offset);
+
+        const absMinControl = inputStretchEffect.uiLayout.find(obj => obj?.["key"] === "absMin");
+        const absMaxControl = inputStretchEffect.uiLayout.find(obj => obj?.["key"] === "absMax");
+        absMinControl.min = arrayData.offset;
+        absMinControl.max = arrayData.scale + arrayData.offset;
+        absMaxControl.min = arrayData.offset;
+        absMaxControl.max = arrayData.scale + arrayData.offset;
+        const auxCache = inputStretchEffect.auxiliaryCache;
+        if (auxCache.scale) {
+            inputStretchEffect.config.absMin = (
+                (inputStretchEffect.config.absMin - auxCache.offset) / (auxCache.scale)
+                * arrayData.scale
+                + arrayData.offset
+            )
+            inputStretchEffect.config.absMax = (
+                (inputStretchEffect.config.absMax - auxCache.offset) / (auxCache.scale)
+                * arrayData.scale
+                + arrayData.offset
+            )
+        }
         inputStretchEffect.auxiliaryCache.mean = arrayData.mean;
         inputStretchEffect.auxiliaryCache.std = arrayData.std;
         inputStretchEffect.auxiliaryCache.p02 = arrayData.p02;
         inputStretchEffect.auxiliaryCache.p98 = arrayData.p98;
+        inputStretchEffect.auxiliaryCache.scale = arrayData.scale;
+        inputStretchEffect.auxiliaryCache.offset = arrayData.offset;
         gid("activeFile").innerText = pdrProductInfo.name;
         resizeAndRedraw();
     } catch (err) {
@@ -321,11 +343,19 @@ async function handlePdrUpload(e) {
         }
         pdrProductInfo.name = firstFile.name;
         pdrProductInfo.objects = objects;
+
+        // do not immediately delete reuploads!
+        const currentFilenames = [];
+        for (const f of e.target.files) {
+            currentFilenames.push(f.name);
+        }
         if (pdrProductInfo.files) {
             for (const f of pdrProductInfo.files) {
+                if (currentFilenames.includes(f)) continue;
                 pyodide.FS.unlink(f);
             }
         }
+
         pdrProductInfo.files = [...e.target.files].map((f) => f.name);
         lockRender();
         await populatePdrUI();
