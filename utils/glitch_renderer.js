@@ -449,7 +449,15 @@ export class GlitchRenderer {
         );
     }
 
-    async applyFullRes(t) {
+    async applyFullRes(t, resetZoom = false) {
+        const oldZoom = this.zoom;
+        const oldPan = [this.centerX, this.centerY];
+        if (resetZoom) {
+            this.zoom = 1.0;
+            this.centerX = 0.5;
+            this.centerY = 0.5;
+            this.inputDirty = true;
+        }
         const gl = this.gl;
         const iw = this.inputWidth
         const ih = this.inputHeight;
@@ -465,7 +473,11 @@ export class GlitchRenderer {
         this.inputDirty = true;
         this.gl.canvas.width = iw;
         this.gl.canvas.height = ih;
-
+        if (resetZoom) {
+            this.zoom = oldZoom;
+            this.centerX = oldPan[0];
+            this.centerY = oldPan[1];
+        }
         return pixels;
     }
 
