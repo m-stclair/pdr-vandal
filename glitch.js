@@ -114,24 +114,22 @@ async function handlePdrBandSelect() {
         absMaxControl.min = arrayData.offset;
         absMaxControl.max = arrayData.scale + arrayData.offset;
         const auxCache = inputStretchEffect.auxiliaryCache;
-        if (auxCache.scale) {
-            inputStretchEffect.config.absMin = (
-                (inputStretchEffect.config.absMin - auxCache.offset) / (auxCache.scale)
-                * arrayData.scale
-                + arrayData.offset
-            )
-            inputStretchEffect.config.absMax = (
-                (inputStretchEffect.config.absMax - auxCache.offset) / (auxCache.scale)
-                * arrayData.scale
-                + arrayData.offset
-            )
-        }
-        inputStretchEffect.auxiliaryCache.mean = arrayData.mean;
-        inputStretchEffect.auxiliaryCache.std = arrayData.std;
-        inputStretchEffect.auxiliaryCache.p02 = arrayData.p02;
-        inputStretchEffect.auxiliaryCache.p98 = arrayData.p98;
-        inputStretchEffect.auxiliaryCache.scale = arrayData.scale;
-        inputStretchEffect.auxiliaryCache.offset = arrayData.offset;
+        inputStretchEffect.config.absMin = (
+            (inputStretchEffect.config.absMin - auxCache.offset) / (auxCache.scale)
+            * arrayData.scale
+            + arrayData.offset
+        )
+        inputStretchEffect.config.absMax = (
+            (inputStretchEffect.config.absMax - auxCache.offset) / (auxCache.scale)
+            * arrayData.scale
+            + arrayData.offset
+        )
+        auxCache.mean = arrayData.mean;
+        auxCache.std = arrayData.std;
+        auxCache.p02 = arrayData.p02;
+        auxCache.p98 = arrayData.p98;
+        auxCache.scale = arrayData.scale;
+        auxCache.offset = arrayData.offset;
         gid("activeFile").innerText = pdrProductInfo.name;
         resizeAndRedraw();
     } catch (err) {

@@ -16,6 +16,7 @@ const {
     'NONE',
     'STDEV',
     'P02_P98',
+    'ABSOLUTE'
 ])
 
 const {
@@ -36,7 +37,9 @@ export default {
         clipMode: ClipEnum.NONE,
         stretchMode: StretchEnum.LIN,
         stdevClip: 2,
-        stretchParam: 2
+        stretchParam: 2,
+        absMin: 0,
+        absMax: 1
     },
     uiLayout: [
         {'type': 'select', 'key': 'clipMode', 'label': 'Range Clip', 'options': ClipOpts},
@@ -58,13 +61,34 @@ export default {
             'max': 10,
             'step': 0.1,
             'showIf': {key: "stretchMode", notEquals: StretchEnum.LIN}
+        },
+        {
+            'type': 'range',
+            'key': 'absMin',
+            'label': 'Minimum',
+            // these are reset automatically `handlePdrBandSelect()`
+            'min': 0,
+            'max': 1,
+            'steps': 200,
+            'showIf': {key: "clipMode", equals: ClipEnum.ABSOLUTE}
+        },
+        {
+            'type': 'range',
+            'key': 'absMax',
+            'label': 'Maximum',
+            // these are set automatically by `handlePdrBandSelect()`
+            'min': 0,
+            'max': 1,
+            'steps': 200,
+            'showIf': {key: "clipMode", equals: ClipEnum.ABSOLUTE}
         }
     ],
 
     apply(instance, inputTex, width, height, t, outputFBO) {
         initGLEffect(instance, fragSources);
         const {
-            clipMode, stdevClip, stretchMode, stretchParam
+            clipMode, stdevClip, stretchMode, stretchParam,
+            absMin, absMax
         } = resolveAnimAll(instance.config, t);
 
         const clipModeN = Number(clipMode);
@@ -72,6 +96,8 @@ export default {
         const std = instance.auxiliaryCache.std;
         const p02 = instance.auxiliaryCache.p02;
         const p98 = instance.auxiliaryCache.p98;
+        const scale = instance.auxiliaryCache.scale;
+        const offset = instance.auxiliaryCache.offset;
         let min, max;
 
         if (clipModeN === ClipEnum.STDEV) {
@@ -89,7 +115,11 @@ export default {
             } else {
                 [min, max] = [p02, p98];
             }
-        } else {
+        }
+        else if (clipModeN === ClipEnum.ABSOLUTE) {
+            [min, max] = [(absMin - offset) / scale, (absMax - offset) / scale];
+        }
+        else {
             [min, max] = [0, 1];
         }
         const uniformSpec = {
@@ -104,7 +134,7 @@ export default {
         instance.glState.renderGL(inputTex, outputFBO, uniformSpec, defines);
     },
     initHook: async (instance, renderer) => {
-        instance.auxiliaryCache = {};
+        instance.auxiliaryCache = {'scale': 1, 'offset': 0};
         await fragSources.load(instance, renderer);
     },
     cleanupHook(instance) {
