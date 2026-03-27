@@ -449,16 +449,19 @@ export class GlitchRenderer {
         );
     }
 
-    async applyFullRes(t, resetZoom = false) {
+    async createExport(t, fullImage) {
+        const gl = this.gl;
+        if (!fullImage) {
+            const {w, h} = this.getViewRect();
+            this.loadImage();
+            const tex = this.applyEffects(t);
+            return {pixels: this.readFramebufferToPixels(tex, w, h), w, h};
+        }
         const oldZoom = this.zoom;
         const oldPan = [this.centerX, this.centerY];
-        if (resetZoom) {
-            this.zoom = 1.0;
-            this.centerX = 0.5;
-            this.centerY = 0.5;
-            this.inputDirty = true;
-        }
-        const gl = this.gl;
+        this.zoom = 1.0;
+        this.centerX = 0.5;
+        this.centerY = 0.5;
         const iw = this.inputWidth
         const ih = this.inputHeight;
         const [w, h] = this.getSourceSize();
@@ -473,12 +476,12 @@ export class GlitchRenderer {
         this.inputDirty = true;
         this.gl.canvas.width = iw;
         this.gl.canvas.height = ih;
-        if (resetZoom) {
+        if (fullImage) {
             this.zoom = oldZoom;
             this.centerX = oldPan[0];
             this.centerY = oldPan[1];
         }
-        return pixels;
+        return {pixels, w, h};
     }
 
 
