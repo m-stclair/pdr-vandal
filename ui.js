@@ -79,7 +79,6 @@ export function setupStaticButtons(
             uploadPDRButton.value = "";
         });
     clearBtn.addEventListener("click", () => {
-        console.log("hey")
         resetStack();
         requestUIDraw();
         requestRender();
