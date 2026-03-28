@@ -278,10 +278,10 @@ input, select, textarea, button {
 
 #leftPane {
     flex: 0 0 70%;
-    max-width: calc(100% - 200px);
+    max-width: calc(100% - 50px);
     padding: 0;
     text-align: center;
-    overflow-y: auto;
+    overflow-x: clip;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -429,14 +429,10 @@ input, select, textarea, button {
 }
 
 canvas {
-    max-width: 100%;
-    max-height: 90vh;
-    height: auto;
-    object-fit: contain;
     display: block;
-    margin: 1em auto 0 auto;
+    margin: 0;
+    flex: 1;
 }
-
 
 .effectRow {
     margin-left: 0.5em;

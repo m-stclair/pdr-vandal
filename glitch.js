@@ -441,9 +441,9 @@ export function isModulating(fx) {
 }
 
 
-async function exportImage(resetZoom = false) {
+async function exportImage(fullImage = false) {
     Lock.image = true;
-    const {pixels, w, h} = await appRenderer.createExport(animating ? timePhase : 0, resetZoom);
+    const {pixels, w, h} = await appRenderer.createExport(animating ? timePhase : 0, fullImage);
     const imgArr = new Uint8ClampedArray(pixels.length);
     for (let i = 0; i < pixels.length; i++) {
         imgArr[i] = Math.round(pixels[i] * 255);
