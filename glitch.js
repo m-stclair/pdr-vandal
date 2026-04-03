@@ -135,6 +135,7 @@ async function handlePdrBandSelect() {
         gid("activeFile").innerText = pdrProductInfo.name;
         activeFile[0] = pdrProductInfo.name;
         resizeAndRedraw();
+        requestUIDraw();
     } catch (err) {
         showPDRErrorModal(err);
     }

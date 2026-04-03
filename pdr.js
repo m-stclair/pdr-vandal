@@ -3,25 +3,35 @@ import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/pyodi
 export let pdrInitializedFlag = false;
 export let pdrInitializingFlag = false;
 
-let pyodide = null;
+let pyodidePromise = null;
 
 const pyodideLoadOpts = {
     stdout: (msg) => console.log("[py]", msg),
     stderr: (msg) => console.error("[py err]", msg),
 }
 
-export async function getPyodide() {
-    if (pyodide === null) {
-        pyodide = await loadPyodide(pyodideLoadOpts);
-        pyodide.setStdout({
-          batched: (msg) => console.log("[py]", msg),
-        });
-        pyodide.setStderr({
-          batched: (msg) => console.error("[py err]", msg),
+export function getPyodide() {
+    if (pyodidePromise === null) {
+        pyodidePromise = (async () => {
+            const pyodide = await loadPyodide(pyodideLoadOpts);
+
+            pyodide.setStdout({
+                batched: (msg) => console.log("[py]", msg),
+            });
+            pyodide.setStderr({
+                batched: (msg) => console.error("[py err]", msg),
+            });
+
+            return pyodide;
+        })().catch((err) => {
+            pyodidePromise = null; // allow retry after failure
+            throw err;
         });
     }
-    return pyodide;
+
+    return pyodidePromise;
 }
+
 
 export async function installPDR() {
     if (pdrInitializedFlag) return;
@@ -37,16 +47,38 @@ export async function installPDR() {
     await pyodide.runPythonAsync(await (await fetch("pdrview.py")).text());
 }
 
-export async function initPDR() {
-    if (pdrInitializedFlag || pdrInitializingFlag) return;
+let pdrInitPromise = null;
+
+export function initPDR() {
+    if (pdrInitializedFlag) {
+        return Promise.resolve();
+    }
+
+    if (pdrInitPromise !== null) {
+        return pdrInitPromise;
+    }
+
     console.log("fetching pyodide...");
     pdrInitializingFlag = true;
-    await getPyodide();
-    await installPDR();
-    await setUpInterface();
-    pdrInitializingFlag = false;
-    pdrInitializedFlag = true;
-    console.log("ready!");
+
+    pdrInitPromise = (async () => {
+        await getPyodide();
+        await installPDR();
+        await setUpInterface();
+
+        pdrInitializedFlag = true;
+        console.log("ready!");
+    })()
+    .catch((err) => {
+        pdrInitializedFlag = false;
+        throw err;
+    })
+    .finally(() => {
+        pdrInitializingFlag = false;
+        pdrInitPromise = null;
+    });
+
+    return pdrInitPromise;
 }
 
 const py = {
