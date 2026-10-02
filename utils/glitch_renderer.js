@@ -1,10 +1,15 @@
 // Hybrid GPU/CPU pipeline manager
-import { checkFrameBuffer, checkTexture, preprocessGLSL} from "./gl.js";
+import { checkFrameBuffer, checkTexture, loadFragSrcInit, preprocessGLSL} from "./gl.js";
 import { getEffectStack } from "../state.js";
 import { hashObject } from "./helpers.js";
 import { isModulating } from "../glitch.js";
 import { monkeyPatchBindTexture, monkeyPatchDrawArrays } from "../tools/gl_bs.js";
 import { clamp } from "./mathutils.js";
+
+// Not awaited at top level: this module is part of an import cycle with
+// state.js / glitch.js, where top-level await risks deadlock.
+const debayerFrag = loadFragSrcInit("debayer.frag", {});
+debayerFrag.load().catch(e => console.error("failed to load debayer shader", e));
 
 const ingressVertSrc = `#version 300 es
 
@@ -107,6 +112,8 @@ export class GlitchRenderer {
         this.inputHeight = null;
         this.inputWidth = null;
         this.ingress = this.compileIngressPrograms();
+        this.debayerIngress = new Map();
+        this.lastDebayerKey = "null";
         this.floatLinear = !!this.gl.getExtension("OES_texture_float_linear");
         this.renderCache = new Map();
         this.outputVert = null;
@@ -270,6 +277,36 @@ export class GlitchRenderer {
             rgb32f: { program: f32RGBProgram, uniforms: f32RGBUniforms },
             r32f: { program: f32GrayProgram, uniforms: f32GrayUniforms }
         };
+    }
+
+    getDebayerConfig() {
+        const fx = getEffectStack().find(f => f.name === "Debayer" && !f.disabled);
+        if (!fx) return null;
+        return {
+            PATTERN: Number(fx.config.PATTERN),
+            METHOD: Number(fx.config.METHOD),
+            CHANNEL: Number(fx.config.CHANNEL),
+        };
+    }
+
+    getDebayerIngress(cfg) {
+        if (!debayerFrag.src) return null;
+        const key = `${cfg.PATTERN}-${cfg.METHOD}-${cfg.CHANNEL}`;
+        if (this.debayerIngress.has(key)) return this.debayerIngress.get(key);
+        const gl = this.gl;
+        const fragSrc = preprocessGLSL(debayerFrag.src, {defines: {...cfg}});
+        const program = this.compileProgram(ingressVertSrc, fragSrc);
+        const entry = {
+            program,
+            uniforms: {
+                source: gl.getUniformLocation(program, "u_source"),
+                viewSpan: gl.getUniformLocation(program, "u_viewSpan"),
+                center: gl.getUniformLocation(program, "u_center"),
+                sourceSize: gl.getUniformLocation(program, "u_sourceSize"),
+            }
+        };
+        this.debayerIngress.set(key, entry);
+        return entry;
     }
 
     compile(type, source, ppOptions) {
@@ -486,6 +523,9 @@ export class GlitchRenderer {
 
 
     applyEffects(t) {
+        if (JSON.stringify(this.getDebayerConfig()) !== this.lastDebayerKey) {
+            this.inputDirty = true;
+        }
         if (this.inputDirty) {
             if (!this.source) return;
             const success = this.loadImage();
@@ -762,7 +802,12 @@ export class GlitchRenderer {
 
         const [spanX, spanY] = this.getViewSpan(w, h);
 
-        const { program, uniforms } = this.ingress[this.source.kind];
+        const debayerCfg = this.getDebayerConfig();
+        const debayer = debayerCfg ? this.getDebayerIngress(debayerCfg) : null;
+        // null key while the shader is still loading forces a retry next frame
+        this.lastDebayerKey = (!debayerCfg || debayer) ? JSON.stringify(debayerCfg) : null;
+
+        const { program, uniforms } = debayer ?? this.ingress[this.source.kind];
         if (!program) {
             throw new Error(`Unknown source kind: ${this.source.kind}`);
         }
@@ -771,6 +816,9 @@ export class GlitchRenderer {
         gl.uniform1i(uniforms.source, 0);
         gl.uniform2f(uniforms.viewSpan, spanX, spanY);
         gl.uniform2f(uniforms.center, this.centerX, this.centerY);
+        if (debayer) {
+            gl.uniform2i(uniforms.sourceSize, this.source.width, this.source.height);
+        }
 
         gl.drawArrays(gl.TRIANGLES, 0, 6);
 
