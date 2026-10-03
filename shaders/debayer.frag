@@ -4,8 +4,9 @@ precision highp int;
 
 // Ingress-stage demosaicking: reconstructs one channel (R, G, or B) of a raw
 // Bayer-mosaic single-band source via bilinear or Malvar-He-Cutler
-// interpolation. Reads the native-resolution source with texelFetch so the
-// mosaic parity is exact regardless of view zoom/pan.
+// interpolation, or (METHOD 2) extracts a single CFA plane at half resolution
+// with no interpolation. Reads the native-resolution source with texelFetch so
+// the mosaic parity is exact regardless of view zoom/pan.
 
 #ifndef PATTERN
 #define PATTERN 0
@@ -15,6 +16,9 @@ precision highp int;
 #endif
 #ifndef CHANNEL
 #define CHANNEL 1
+#endif
+#ifndef PLANE
+#define PLANE 2
 #endif
 
 uniform sampler2D u_source;
@@ -28,6 +32,12 @@ out vec4 outColor;
 const int RED = 0;
 const int GREEN = 1;
 const int BLUE = 2;
+
+// SUBSAMPLE planes; GREEN1/GREEN2 are the 1st/2nd green in raster order
+const int P_RED = 0;
+const int P_BLUE = 1;
+const int P_GREEN1 = 2;
+const int P_GREEN2 = 3;
 
 // Malvar-He-Cutler 5x5 linear demosaicking kernels (sum to 8; divided by 8
 // on use). Row-major, offsets (dx,dy) from -2..2.
@@ -135,17 +145,39 @@ float malvarReconstruct(ivec2 p, int myClass, int target) {
     return applyKernel5x5(p, F4);
 }
 
+// Offset of the selected plane's site within a 2x2 Bayer cell.
+ivec2 planeOffset() {
+    int targetClass = (PLANE == P_RED) ? RED : (PLANE == P_BLUE) ? BLUE : GREEN;
+    int skip = (PLANE == P_GREEN2) ? 1 : 0;
+    for (int i = 0; i < 4; i++) {
+        ivec2 o = ivec2(i & 1, i >> 1);
+        if (classAt(o) == targetClass) {
+            if (skip == 0) return o;
+            skip--;
+        }
+    }
+    return ivec2(0);
+}
+
 void main() {
     vec2 srcUV = clamp(u_center + (v_uv - 0.5) * u_viewSpan, 0.0, 1.0);
+    float v;
+#if METHOD == 2
+    ivec2 halfSize = u_sourceSize / 2;
+    ivec2 cp = clamp(
+        ivec2(floor(srcUV * vec2(halfSize))), ivec2(0), halfSize - 1
+    );
+    v = px(cp * 2 + planeOffset());
+#else
     ivec2 sp = clamp(
         ivec2(floor(srcUV * vec2(u_sourceSize))), ivec2(0), u_sourceSize - 1
     );
     int myClass = classAt(sp);
-    float v;
 #if METHOD == 0
     v = bilinearReconstruct(sp, myClass, CHANNEL);
 #else
     v = malvarReconstruct(sp, myClass, CHANNEL);
+#endif
 #endif
     v = clamp(v, 0.0, 1.0);
     outColor = vec4(v, v, v, 1.0);

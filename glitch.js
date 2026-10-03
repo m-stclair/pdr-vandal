@@ -253,7 +253,7 @@ function eventToSourcePixel(e, renderer) {
     const srcU = renderer.centerX + (u - 0.5) * spanX;
     const srcV = renderer.centerY + (v - 0.5) * spanY;
 
-    const [imageW, imageH] = renderer.getSourceSize();
+    const [imageW, imageH] = renderer.getImageSize();
 
     const cu = Math.max(0, Math.min(1, srcU));
     const cv = Math.max(0, Math.min(1, srcV));
@@ -267,6 +267,8 @@ function eventToSourcePixel(e, renderer) {
 }
 
 const coordOutput = gid("coordOutput");
+// last canvas mousemove, so the readout can refresh after a re-render
+let lastCoordEvent = null;
 
 function renderCoords(e, renderer, output) {
     if (!renderer.source?.data) {
@@ -277,8 +279,10 @@ function renderCoords(e, renderer, output) {
         return;
     }
     const {x, y} = sourcePixel;
-    let coordText = `(${Math.floor(x)}, ${Math.floor(y)})`;
-    const startIndex = (x + y * renderer.source.width) * renderer.source.channels
+    const [imageW, imageH] = renderer.getImageSize();
+    let coordText = `(${Math.floor(x)}, ${Math.floor(y)}) of ${imageW}×${imageH}`;
+    const [rx, ry] = renderer.imageToSourcePixel(x, y);
+    const startIndex = (rx + ry * renderer.source.width) * renderer.source.channels
     const values = [];
     for (let i = 0; i < renderer.source.channels; i++) {
         const value = renderer.source.data[startIndex + i];
@@ -291,9 +295,13 @@ function renderCoords(e, renderer, output) {
 }
 
 
-appRenderer.gl.canvas.addEventListener(
-    'mousemove', (e) => renderCoords(e, appRenderer, coordOutput)
-)
+appRenderer.gl.canvas.addEventListener('mousemove', (e) => {
+    lastCoordEvent = e;
+    renderCoords(e, appRenderer, coordOutput);
+})
+appRenderer.gl.canvas.addEventListener('mouseleave', () => {
+    lastCoordEvent = null;
+})
 
 
 function lockApp() {
@@ -508,6 +516,7 @@ function firePipeline(ctx = defaultCtx, t = null) {
     if (!appRenderer.source) return;
     const finalTexture = appRenderer.applyEffects(time);
     appRenderer.writeToCanvas(finalTexture);
+    if (lastCoordEvent) renderCoords(lastCoordEvent, appRenderer, coordOutput);
 }
 
 

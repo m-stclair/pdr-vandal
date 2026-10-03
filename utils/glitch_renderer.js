@@ -5,6 +5,7 @@ import { hashObject } from "./helpers.js";
 import { isModulating } from "../glitch.js";
 import { monkeyPatchBindTexture, monkeyPatchDrawArrays } from "../tools/gl_bs.js";
 import { clamp } from "./mathutils.js";
+import { DebayerMethodEnum, planeOffset } from "../effects/debayer.js";
 
 // Not awaited at top level: this module is part of an import cycle with
 // state.js / glitch.js, where top-level await risks deadlock.
@@ -144,6 +145,28 @@ export class GlitchRenderer {
     getSourceSize() {
         if (!this.source) return null;
         return [this.source.width, this.source.height];
+    }
+
+    // Dimensions of the image as ingested: half-size when Debayer is
+    // extracting a single CFA plane, otherwise the raw source size.
+    getImageSize() {
+        const size = this.getSourceSize();
+        if (!size) return null;
+        if (this.getDebayerConfig()?.METHOD === DebayerMethodEnum.SUBSAMPLE) {
+            return [Math.floor(size[0] / 2), Math.floor(size[1] / 2)];
+        }
+        return size;
+    }
+
+    // Map a pixel in getImageSize() coordinates to the raw source pixel it
+    // was read from.
+    imageToSourcePixel(x, y) {
+        const cfg = this.getDebayerConfig();
+        if (cfg?.METHOD === DebayerMethodEnum.SUBSAMPLE) {
+            const [ox, oy] = planeOffset(cfg.PATTERN, cfg.PLANE);
+            return [2 * x + ox, 2 * y + oy];
+        }
+        return [x, y];
     }
 
     clearSourceTextures() {
@@ -286,12 +309,13 @@ export class GlitchRenderer {
             PATTERN: Number(fx.config.PATTERN),
             METHOD: Number(fx.config.METHOD),
             CHANNEL: Number(fx.config.CHANNEL),
+            PLANE: Number(fx.config.PLANE),
         };
     }
 
     getDebayerIngress(cfg) {
         if (!debayerFrag.src) return null;
-        const key = `${cfg.PATTERN}-${cfg.METHOD}-${cfg.CHANNEL}`;
+        const key = `${cfg.PATTERN}-${cfg.METHOD}-${cfg.CHANNEL}-${cfg.PLANE}`;
         if (this.debayerIngress.has(key)) return this.debayerIngress.get(key);
         const gl = this.gl;
         const fragSrc = preprocessGLSL(debayerFrag.src, {defines: {...cfg}});
@@ -501,7 +525,7 @@ export class GlitchRenderer {
         this.centerY = 0.5;
         const iw = this.inputWidth
         const ih = this.inputHeight;
-        const [w, h] = this.getSourceSize();
+        const [w, h] = this.getImageSize();
         this.inputWidth = w;
         this.inputHeight = h;
         this.gl.canvas.width = w;
@@ -691,7 +715,7 @@ export class GlitchRenderer {
     getViewRect() {
         const canvasW = this.gl.canvas.width;
         const canvasH = this.gl.canvas.height;
-        const [imageW, imageH] = this.getSourceSize();
+        const [imageW, imageH] = this.getImageSize();
 
         if (imageH === undefined) {
             throw new Error("oops")
@@ -723,7 +747,7 @@ export class GlitchRenderer {
     }
 
     getViewSpan(viewW, viewH) {
-        const [imageW, imageH] = this.getSourceSize();
+        const [imageW, imageH] = this.getImageSize();
 
         const viewAspect = viewW / viewH;
         const imageAspect = imageW / imageH;

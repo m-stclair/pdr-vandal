@@ -46,7 +46,7 @@
   "palettesquare.frag": "palettesquare.c0bdbffd.frag",
   "look.frag": "look.5bca1485.frag",
   "pcaprobe.frag": "pcaprobe.a27e7a4a.frag",
-  "debayer.frag": "debayer.93440d25.frag",
+  "debayer.frag": "debayer.1b171158.frag",
   "includes/blend_old.glsl": "includes/blend_old.31c3e96b.glsl",
   "includes/blend.glsl": "includes/blend.25a5a5db.glsl",
   "includes/noise.glsl": "includes/noise.0daf813d.glsl",
