@@ -5,7 +5,8 @@ precision highp int;
 // Ingress-stage demosaicking: reconstructs one channel (R, G, or B) of a raw
 // Bayer-mosaic single-band source via bilinear or Malvar-He-Cutler
 // interpolation, or (METHOD 2) extracts a single CFA plane at half resolution
-// with no interpolation. Reads the native-resolution source with texelFetch so
+// with no interpolation. With RGB (METHOD 0/1 only), outputs all three
+// reconstructed channels scaled by u_gains. Reads the native-resolution source with texelFetch so
 // the mosaic parity is exact regardless of view zoom/pan.
 
 #ifndef PATTERN
@@ -20,11 +21,15 @@ precision highp int;
 #ifndef PLANE
 #define PLANE 2
 #endif
+#ifndef RGB
+#define RGB 0
+#endif
 
 uniform sampler2D u_source;
 uniform vec2 u_center;
 uniform vec2 u_viewSpan;
 uniform ivec2 u_sourceSize;
+uniform vec3 u_gains;
 
 in vec2 v_uv;
 out vec4 outColor;
@@ -159,26 +164,38 @@ ivec2 planeOffset() {
     return ivec2(0);
 }
 
+float reconstruct(ivec2 p, int myClass, int target) {
+#if METHOD == 0
+    return bilinearReconstruct(p, myClass, target);
+#else
+    return malvarReconstruct(p, myClass, target);
+#endif
+}
+
 void main() {
     vec2 srcUV = clamp(u_center + (v_uv - 0.5) * u_viewSpan, 0.0, 1.0);
-    float v;
 #if METHOD == 2
     ivec2 halfSize = u_sourceSize / 2;
     ivec2 cp = clamp(
         ivec2(floor(srcUV * vec2(halfSize))), ivec2(0), halfSize - 1
     );
-    v = px(cp * 2 + planeOffset());
+    float v = clamp(px(cp * 2 + planeOffset()), 0.0, 1.0);
+    outColor = vec4(v, v, v, 1.0);
 #else
     ivec2 sp = clamp(
         ivec2(floor(srcUV * vec2(u_sourceSize))), ivec2(0), u_sourceSize - 1
     );
     int myClass = classAt(sp);
-#if METHOD == 0
-    v = bilinearReconstruct(sp, myClass, CHANNEL);
+#if RGB == 1
+    vec3 c = vec3(
+        reconstruct(sp, myClass, RED),
+        reconstruct(sp, myClass, GREEN),
+        reconstruct(sp, myClass, BLUE)
+    ) * u_gains;
+    outColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 #else
-    v = malvarReconstruct(sp, myClass, CHANNEL);
-#endif
-#endif
-    v = clamp(v, 0.0, 1.0);
+    float v = clamp(reconstruct(sp, myClass, CHANNEL), 0.0, 1.0);
     outColor = vec4(v, v, v, 1.0);
+#endif
+#endif
 }

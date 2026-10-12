@@ -1,16 +1,22 @@
 // Hybrid GPU/CPU pipeline manager
 import { checkFrameBuffer, checkTexture, loadFragSrcInit, preprocessGLSL} from "./gl.js";
-import { getEffectStack } from "../state.js";
+import { getEffectStack, requestUIDraw } from "../state.js";
 import { hashObject } from "./helpers.js";
 import { isModulating } from "../glitch.js";
 import { monkeyPatchBindTexture, monkeyPatchDrawArrays } from "../tools/gl_bs.js";
 import { clamp } from "./mathutils.js";
-import { DebayerMethodEnum, planeOffset } from "../effects/debayer.js";
+import {
+    AutoRegionEnum, computeAutoGains, DebayerMethodEnum, planeOffset
+} from "../effects/debayer.js";
 
 // Not awaited at top level: this module is part of an import cycle with
 // state.js / glitch.js, where top-level await risks deadlock.
 const debayerFrag = loadFragSrcInit("debayer.frag", {});
 debayerFrag.load().catch(e => console.error("failed to load debayer shader", e));
+
+function debayerGains(config) {
+    return ["GAIN_R", "GAIN_G", "GAIN_B"].map(k => Number(config[k]?.value ?? config[k]));
+}
 
 const ingressVertSrc = `#version 300 es
 
@@ -115,6 +121,12 @@ export class GlitchRenderer {
         this.ingress = this.compileIngressPrograms();
         this.debayerIngress = new Map();
         this.lastDebayerKey = "null";
+        // Debayer AUTO gains: inputs they were computed from, the values
+        // written, and a hold so exports never recompute them.
+        this.lastAutoKey = null;
+        this.lastAutoSource = null;
+        this.lastAutoGains = null;
+        this.freezeAutoGains = false;
         this.floatLinear = !!this.gl.getExtension("OES_texture_float_linear");
         this.renderCache = new Map();
         this.outputVert = null;
@@ -302,23 +314,32 @@ export class GlitchRenderer {
         };
     }
 
+    getDebayerEffect() {
+        return getEffectStack().find(f => f.name === "Debayer" && !f.disabled);
+    }
+
     getDebayerConfig() {
-        const fx = getEffectStack().find(f => f.name === "Debayer" && !f.disabled);
+        const fx = this.getDebayerEffect();
         if (!fx) return null;
+        const method = Number(fx.config.METHOD);
+        const rgb = method !== DebayerMethodEnum.SUBSAMPLE && fx.config.RGB === true;
         return {
             PATTERN: Number(fx.config.PATTERN),
-            METHOD: Number(fx.config.METHOD),
+            METHOD: method,
             CHANNEL: Number(fx.config.CHANNEL),
             PLANE: Number(fx.config.PLANE),
+            RGB: rgb ? 1 : 0,
+            GAINS: rgb ? debayerGains(fx.config) : null,
         };
     }
 
     getDebayerIngress(cfg) {
         if (!debayerFrag.src) return null;
-        const key = `${cfg.PATTERN}-${cfg.METHOD}-${cfg.CHANNEL}-${cfg.PLANE}`;
+        const {GAINS, ...defines} = cfg;
+        const key = `${cfg.PATTERN}-${cfg.METHOD}-${cfg.CHANNEL}-${cfg.PLANE}-${cfg.RGB}`;
         if (this.debayerIngress.has(key)) return this.debayerIngress.get(key);
         const gl = this.gl;
-        const fragSrc = preprocessGLSL(debayerFrag.src, {defines: {...cfg}});
+        const fragSrc = preprocessGLSL(debayerFrag.src, {defines});
         const program = this.compileProgram(ingressVertSrc, fragSrc);
         const entry = {
             program,
@@ -327,10 +348,58 @@ export class GlitchRenderer {
                 viewSpan: gl.getUniformLocation(program, "u_viewSpan"),
                 center: gl.getUniformLocation(program, "u_center"),
                 sourceSize: gl.getUniformLocation(program, "u_sourceSize"),
+                gains: gl.getUniformLocation(program, "u_gains"),
             }
         };
         this.debayerIngress.set(key, entry);
         return entry;
+    }
+
+    // Debayer AUTO: when its inputs change, compute per-band gains and write
+    // them into the effect config (and so the sliders). A gain the user has
+    // changed since the last auto write turns AUTO off instead.
+    updateAutoGains() {
+        if (this.freezeAutoGains) return;
+        const fx = this.getDebayerEffect();
+        const cfg = fx ? this.getDebayerConfig() : null;
+        if (!cfg?.RGB || fx.config.AUTO !== true
+            || this.source?.kind !== "r32f" || !this.source.data) {
+            this.lastAutoKey = null;
+            this.lastAutoGains = null;
+            return;
+        }
+        if (this.lastAutoGains
+            && cfg.GAINS.some((g, i) => g !== this.lastAutoGains[i])) {
+            fx.config.AUTO = false;
+            this.lastAutoKey = null;
+            this.lastAutoGains = null;
+            requestUIDraw();
+            return;
+        }
+        const {width, height} = this.source;
+        let rect = {x0: 0, y0: 0, x1: width, y1: height};
+        if (Number(fx.config.AUTO_REGION) === AutoRegionEnum.CURRENT_VIEW) {
+            const {w, h} = this.getViewRect();
+            const [spanX, spanY] = this.getViewSpan(w, h);
+            const u0 = clamp(this.centerX - spanX / 2, 0, 1);
+            const u1 = clamp(this.centerX + spanX / 2, 0, 1);
+            const v0 = clamp(this.centerY - spanY / 2, 0, 1);
+            const v1 = clamp(this.centerY + spanY / 2, 0, 1);
+            rect = {
+                x0: Math.floor(u0 * width), x1: Math.ceil(u1 * width),
+                y0: Math.floor(v0 * height), y1: Math.ceil(v1 * height),
+            };
+        }
+        const key = JSON.stringify([fx.id, cfg.PATTERN, rect]);
+        if (key === this.lastAutoKey && this.lastAutoSource === this.source) return;
+        const gains = computeAutoGains(
+            this.source.data, width, height, cfg.PATTERN, rect
+        );
+        [fx.config.GAIN_R, fx.config.GAIN_G, fx.config.GAIN_B] = gains;
+        this.lastAutoKey = key;
+        this.lastAutoSource = this.source;
+        this.lastAutoGains = gains;
+        requestUIDraw();
     }
 
     compile(type, source, ppOptions) {
@@ -510,7 +579,18 @@ export class GlitchRenderer {
         );
     }
 
+    // Gains are frozen so the export uses exactly the displayed values, even
+    // when AUTO tracks the current view and the full-image pass moves it.
     async createExport(t, fullImage) {
+        this.freezeAutoGains = true;
+        try {
+            return this.renderExport(t, fullImage);
+        } finally {
+            this.freezeAutoGains = false;
+        }
+    }
+
+    renderExport(t, fullImage) {
         const gl = this.gl;
         if (!fullImage) {
             const {w, h} = this.getViewRect();
@@ -547,6 +627,7 @@ export class GlitchRenderer {
 
 
     applyEffects(t) {
+        this.updateAutoGains();
         if (JSON.stringify(this.getDebayerConfig()) !== this.lastDebayerKey) {
             this.inputDirty = true;
         }
@@ -790,6 +871,11 @@ export class GlitchRenderer {
             if (!ok) return false;
         }
 
+        const debayerCfg = this.getDebayerConfig();
+        const debayer = debayerCfg ? this.getDebayerIngress(debayerCfg) : null;
+        // null key while the shader is still loading forces a retry next frame
+        this.lastDebayerKey = (!debayerCfg || debayer) ? JSON.stringify(debayerCfg) : null;
+
         const workingTex = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, workingTex);
         gl.texImage2D(
@@ -826,11 +912,6 @@ export class GlitchRenderer {
 
         const [spanX, spanY] = this.getViewSpan(w, h);
 
-        const debayerCfg = this.getDebayerConfig();
-        const debayer = debayerCfg ? this.getDebayerIngress(debayerCfg) : null;
-        // null key while the shader is still loading forces a retry next frame
-        this.lastDebayerKey = (!debayerCfg || debayer) ? JSON.stringify(debayerCfg) : null;
-
         const { program, uniforms } = debayer ?? this.ingress[this.source.kind];
         if (!program) {
             throw new Error(`Unknown source kind: ${this.source.kind}`);
@@ -842,6 +923,7 @@ export class GlitchRenderer {
         gl.uniform2f(uniforms.center, this.centerX, this.centerY);
         if (debayer) {
             gl.uniform2i(uniforms.sourceSize, this.source.width, this.source.height);
+            if (debayerCfg.GAINS) gl.uniform3f(uniforms.gains, ...debayerCfg.GAINS);
         }
 
         gl.drawArrays(gl.TRIANGLES, 0, 6);

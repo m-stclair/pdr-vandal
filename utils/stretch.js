@@ -22,7 +22,12 @@ function normalizeRange(data, lo, hi, targetMin = 0, targetMax = 1) {
     return output;
 }
 
-function approxPercentileClip(data, percentileLow = 1, percentileHigh = 99, nBins=512) {
+// Approximate [lo, hi] percentile values of data in [0, 1] via a histogram.
+// lo is the lower edge of its bin; hi is the lower edge, or the upper edge
+// if upperEdge.
+function approxPercentiles(
+    data, percentileLow = 1, percentileHigh = 99, nBins = 512, upperEdge = false
+) {
     const hist = hist1D(data, nBins, 0, 1)
     const total = data.length;
     const loThresh = (percentileLow / 100) * total;
@@ -37,10 +42,14 @@ function approxPercentileClip(data, percentileLow = 1, percentileHigh = 99, nBin
     for (let i = nBins - 1; i >= 0; i--) {
         sum += hist[i];
         if (sum >= total - hiThresh) {
-            hi = i / nBins; break;
+            hi = (upperEdge ? i + 1 : i) / nBins; break;
         }
     }
+    return [lo, hi];
+}
 
+function approxPercentileClip(data, percentileLow = 1, percentileHigh = 99, nBins=512) {
+    const [lo, hi] = approxPercentiles(data, percentileLow, percentileHigh, nBins);
     return normalizeRange(data, lo, hi);
 }
 
@@ -70,6 +79,7 @@ function channelwise(data, width, height, stretchFunc, ...stretchArgs) {
 
 export {
     normalizeRange,
+    approxPercentiles,
     approxPercentileClip,
     stddevClip,
     minmaxClip,
