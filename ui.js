@@ -179,24 +179,38 @@ export function setupPDRErrorModal(unlockApp) {
     });
 }
 
-export function setupHelpModal(lockApp, unlockApp) {
-    const helpModal = gid("help-modal");
-    const helpModalOpenButton = gid("open-help-modal")
-    const helpModalContent = gid("help-modal-content")
-    helpModalOpenButton.addEventListener("click", () => {
-        helpModal.style.display = "block";
+function setupModal(modalId, openId, contentId, closeId, lockApp, unlockApp) {
+    const modal = gid(modalId);
+    const modalOpenButton = gid(openId)
+    const modalContent = gid(contentId)
+    modalOpenButton.addEventListener("click", () => {
+        modal.style.display = "block";
         lockApp();
     })
-    helpModalContent.addEventListener("click", (e) => e.stopPropagation());
-    helpModal.addEventListener("click", () => {
-        helpModal.style.display = "none";
+    modalContent.addEventListener("click", (e) => e.stopPropagation());
+    modal.addEventListener("click", () => {
+        modal.style.display = "none";
         unlockApp();
     })
-    const helpModalCloseButton = gid("close-help-modal")
-    helpModalCloseButton.addEventListener("click", () => {
-        helpModal.style.display = "none";
+    const modalCloseButton = gid(closeId)
+    modalCloseButton.addEventListener("click", () => {
+        modal.style.display = "none";
         unlockApp();
     })
+}
+
+export function setupHelpModal(lockApp, unlockApp) {
+    setupModal(
+        "help-modal", "open-help-modal", "help-modal-content", "close-help-modal",
+        lockApp, unlockApp
+    );
+}
+
+export function setupAboutModal(lockApp, unlockApp) {
+    setupModal(
+        "about-modal", "open-about-modal", "about-modal-content", "close-about-modal",
+        lockApp, unlockApp
+    );
 }
 
 

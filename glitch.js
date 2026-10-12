@@ -1,6 +1,7 @@
 import {
     pdrErrorModal,
     pdrErrorModalContent,
+    setupAboutModal,
     setupExportImage,
     setupHelpModal,
     setupPaneDrag,
@@ -636,6 +637,7 @@ async function appSetup() {
     setupPaneDrag();
     setupPDRErrorModal(unlockApp);
     setupHelpModal(lockApp, unlockApp);
+    setupAboutModal(lockApp, unlockApp);
     setupWindow(resizeAndRedraw);
     await drawPattern('spiral');
     setupInputStretch();

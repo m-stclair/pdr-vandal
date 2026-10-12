@@ -42,6 +42,10 @@
             this is the first image you've opened with PDR in the session, PDR will install (10-20 seconds). After
             opening, the image will display in the main pane. You can zoom the image in and out using mouse or
             touchpad scroll. When zoomed, you can pan the image by dragging.</p>
+        <p>If opening a PDS file with detached label (e.g. an PDS4 xml label), then select both the observational
+            data file and the label file in the file selection dialog. PDR will use the information in the label
+            to parse the observational data.</p>
+        </p>
         <h4>Switching Bands and Objects</h4>
         <p>If the product you've uploaded has more than one image (like a FITS file with multiple image HDUs), you can
             switch between them using the "object" dropdown in the upper right-hand corner. If an image has multiple
@@ -74,6 +78,30 @@
         <h4>Privacy</h4>
         <p>pdr-vandal runs locally in your browser. It does not upload files to a server for processing. Your files
             never leave your computer.</p>
+    </div>
+</div>
+
+<div id="about-modal" class="modal">
+    <div id="about-modal-content" class="modal-content" style="margin-top: 2%">
+            <span class="close-btn" id="close-about-modal">&times;</span>
+
+        <h4>About pdr-vandal</h4>
+        <p>pdr-vandal is a browser-based viewer and visual effects workbench for planetary and other scientific
+            image data. It combines <i>vandal</i>, a visual effect chain GUI for image enhancement and artistic defacement
+            (optionally including animation via sidechained LFOs), with
+            <a href="https://github.com/MillionConcepts/pdr" target="_blank" rel="noopener">pdr</a>, which reads
+            Planetary Data System (PDS) and other science data formats.</p>
+        <h4>Status</h4>
+        <p>pdr-vandal is at working beta status. It currently makes no firm guarantees about its stability or completeness.</p>
+        <h4>Privacy</h4>
+        <p>pdr-vandal runs entirely in your browser. Your files are never uploaded to a server. The only network
+            access is fetching Pyodide and pdr from a CDN the first time you open a file with PDR.</p>
+        <h4>License</h4>
+        <p>pdr-vandal is licensed under BSD 3-Clause, copyright Michael St. Clair and Chase Million (Million Concepts).
+            Some ancillary shaders bear
+            additional licenses, attached as headers to individual files.</p>
+        <h4>Feedback</h4>
+        <p>Contributions are not solicited at this time, but feel free to file <a href="https://github.com/m-stclair/pdr-vandal" target="_blank" rel="noopener">Issues</a>.</p>
     </div>
 </div>
 
@@ -111,6 +139,7 @@
     || <button id="clear-stack">Clear Effects</button>
     || <button id="freezeAnimation">Freeze Animation</button>
     || <button id="open-help-modal" style="color: lawngreen">Help</button>
+    || <button id="open-about-modal" style="color: lawngreen">About</button>
 </div>
 
 
