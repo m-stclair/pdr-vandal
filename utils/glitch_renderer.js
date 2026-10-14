@@ -1,18 +1,27 @@
 // Hybrid GPU/CPU pipeline manager
-import { checkFrameBuffer, checkTexture, loadFragSrcInit, preprocessGLSL} from "./gl.js";
+import { checkFrameBuffer, checkTexture, preprocessGLSL} from "./gl.js";
 import { getEffectStack, requestUIDraw } from "../state.js";
 import { hashObject } from "./helpers.js";
 import { isModulating } from "../glitch.js";
 import { monkeyPatchBindTexture, monkeyPatchDrawArrays } from "../tools/gl_bs.js";
 import { clamp } from "./mathutils.js";
 import {
-    AutoRegionEnum, computeAutoGains, DebayerMethodEnum, planeOffset
+    AutoRegionEnum, computeAutoGains, DebayerMethodEnum, debayerFrag,
+    debayerFragLoaded, planeOffset
 } from "../effects/debayer.js";
 
-// Not awaited at top level: this module is part of an import cycle with
-// state.js / glitch.js, where top-level await risks deadlock.
-const debayerFrag = loadFragSrcInit("debayer.frag", {});
-debayerFrag.load().catch(e => console.error("failed to load debayer shader", e));
+// Debayer's initHook waits for this shader, so instances added through
+// fx.ready never ingest the raw mosaic. Paths that skip fx.ready (e.g. the
+// randomizer) can still render a frame before it arrives (lastDebayerKey ===
+// null); request a render once it does so that frame is redone. Not awaited
+// at top level: this module is part of an import cycle with state.js /
+// glitch.js, where top-level await risks deadlock. The dynamic import settles
+// only after state.js has finished evaluating, so requestRender is
+// initialized even if the shader arrives while state.js is still loading.
+debayerFragLoaded.then(
+    () => import("../state.js").then(({requestRender}) => requestRender()),
+    e => console.error("failed to load debayer shader", e),
+);
 
 function debayerGains(config) {
     return ["GAIN_R", "GAIN_G", "GAIN_B"].map(k => Number(config[k]?.value ?? config[k]));

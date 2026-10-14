@@ -1,8 +1,13 @@
+import {loadFragSrcInit} from "../utils/gl.js";
 import {makeEnum} from "../utils/glsl_enums.js";
 import {approxPercentiles} from "../utils/stretch.js";
 
 // Settings-only module: GlitchRenderer.loadImage() reads this effect's config
-// and demosaics the native-resolution source during ingress.
+// and demosaics the native-resolution source during ingress, with the shader
+// loaded here. initHook resolves once it has loaded, so a Debayer instance
+// added through fx.ready never ingests the raw mosaic.
+export const debayerFrag = loadFragSrcInit("debayer.frag", {});
+export const debayerFragLoaded = debayerFrag.load();
 
 const {
     enum: BayerPatternEnum,
@@ -81,6 +86,7 @@ export default {
             showIf: [...RGB_ACTIVE, {key: "AUTO", equals: true}]
         },
     ],
+    initHook: () => debayerFragLoaded,
 };
 
 export {DebayerMethodEnum, AutoRegionEnum};

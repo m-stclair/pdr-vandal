@@ -61,7 +61,7 @@ export default {
     name: "Decorrelation Stretch",
     defaultConfig: {
         REGION: RegionEnum.WHOLE_IMAGE,
-        STRETCH: StretchEnum.JOINT,
+        STRETCH: StretchEnum.PER_CHANNEL,
         SIGMA_MODE: SigmaModeEnum.FIXED,
         SIGMA: 1.0,
         LOW: 1.0,
