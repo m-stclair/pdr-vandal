@@ -127,6 +127,12 @@ export class GlitchRenderer {
         this.lastAutoSource = null;
         this.lastAutoGains = null;
         this.freezeAutoGains = false;
+        // Decorrelation Stretch: per-effect statistics cache, the export flag
+        // that selects full-resolution statistics, and the view region held
+        // while an export moves the view.
+        this.dcsCache = new Map();
+        this.dcsExport = false;
+        this.frozenViewRegion = null;
         this.floatLinear = !!this.gl.getExtension("OES_texture_float_linear");
         this.renderCache = new Map();
         this.outputVert = null;
@@ -379,12 +385,7 @@ export class GlitchRenderer {
         const {width, height} = this.source;
         let rect = {x0: 0, y0: 0, x1: width, y1: height};
         if (Number(fx.config.AUTO_REGION) === AutoRegionEnum.CURRENT_VIEW) {
-            const {w, h} = this.getViewRect();
-            const [spanX, spanY] = this.getViewSpan(w, h);
-            const u0 = clamp(this.centerX - spanX / 2, 0, 1);
-            const u1 = clamp(this.centerX + spanX / 2, 0, 1);
-            const v0 = clamp(this.centerY - spanY / 2, 0, 1);
-            const v1 = clamp(this.centerY + spanY / 2, 0, 1);
+            const {u0, u1, v0, v1} = this.getViewRegion();
             rect = {
                 x0: Math.floor(u0 * width), x1: Math.ceil(u1 * width),
                 y0: Math.floor(v0 * height), y1: Math.ceil(v1 * height),
@@ -510,23 +511,32 @@ export class GlitchRenderer {
         this.fxbuffers[id] = undefined;
     }
 
-    make_framebuffer(width, height, id, name) {
+    // RGBA32F is only filterable with OES_texture_float_linear; without it a
+    // LINEAR float texture is incomplete and samples as black.
+    textureFilter(internalFormat) {
         const gl = this.gl;
+        return internalFormat === gl.RGBA32F && !this.floatLinear ? gl.NEAREST : gl.LINEAR;
+    }
+
+    make_framebuffer(width, height, id, name, format = null) {
+        const gl = this.gl;
+        const fmt = format ?? this.format;
         const tex = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, tex);
         gl.texImage2D(
             gl.TEXTURE_2D,
             0,
-            this.format.internalFormat,
+            fmt.internalFormat,
             width,
             height,
             0,
-            this.format.formatEnum,
-            this.format.typeEnum,
+            fmt.formatEnum,
+            fmt.typeEnum,
             null
         );
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        const filter = this.textureFilter(fmt.internalFormat);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         // checkTexture(gl, tex);
@@ -581,12 +591,18 @@ export class GlitchRenderer {
 
     // Gains are frozen so the export uses exactly the displayed values, even
     // when AUTO tracks the current view and the full-image pass moves it.
+    // Decorrelation Stretch recomputes its statistics at full resolution,
+    // over the region that was on screen.
     async createExport(t, fullImage) {
         this.freezeAutoGains = true;
+        this.frozenViewRegion = this.getViewRegion();
+        this.dcsExport = true;
         try {
             return this.renderExport(t, fullImage);
         } finally {
             this.freezeAutoGains = false;
+            this.frozenViewRegion = null;
+            this.dcsExport = false;
         }
     }
 
@@ -871,26 +887,29 @@ export class GlitchRenderer {
             if (!ok) return false;
         }
 
-        const debayerCfg = this.getDebayerConfig();
-        const debayer = debayerCfg ? this.getDebayerIngress(debayerCfg) : null;
+        const ingress = this.getIngress();
+        const {debayerCfg, debayer} = ingress;
         // null key while the shader is still loading forces a retry next frame
         this.lastDebayerKey = (!debayerCfg || debayer) ? JSON.stringify(debayerCfg) : null;
 
         const workingTex = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, workingTex);
+        // Float32 so precision-sensitive effects (Input Stretch, Decorrelation
+        // Stretch) see source values without half-float rounding.
         gl.texImage2D(
             gl.TEXTURE_2D,
             0,
-            gl.RGBA16F,
+            gl.RGBA32F,
             w,
             h,
             0,
             gl.RGBA,
-            gl.HALF_FLOAT,
+            gl.FLOAT,
             null
         );
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        const filter = this.textureFilter(gl.RGBA32F);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
@@ -904,31 +923,9 @@ export class GlitchRenderer {
             0
         );
 
-        gl.viewport(0, 0, w, h);
-        gl.bindVertexArray(this.vao);
-
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
-
         const [spanX, spanY] = this.getViewSpan(w, h);
+        this.drawIngress(ingress, w, h, [this.centerX, this.centerY], [spanX, spanY]);
 
-        const { program, uniforms } = debayer ?? this.ingress[this.source.kind];
-        if (!program) {
-            throw new Error(`Unknown source kind: ${this.source.kind}`);
-        }
-
-        gl.useProgram(program);
-        gl.uniform1i(uniforms.source, 0);
-        gl.uniform2f(uniforms.viewSpan, spanX, spanY);
-        gl.uniform2f(uniforms.center, this.centerX, this.centerY);
-        if (debayer) {
-            gl.uniform2i(uniforms.sourceSize, this.source.width, this.source.height);
-            if (debayerCfg.GAINS) gl.uniform3f(uniforms.gains, ...debayerCfg.GAINS);
-        }
-
-        gl.drawArrays(gl.TRIANGLES, 0, 6);
-
-        gl.bindTexture(gl.TEXTURE_2D, null);
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.defaultFBO);
         gl.deleteFramebuffer(fbo);
@@ -940,6 +937,205 @@ export class GlitchRenderer {
         this.inputTexture = workingTex;
         this.inputWidth = w;
         this.inputHeight = h;
+        return true;
+    }
+
+    // Ingress program for the current source: the Debayer program when a
+    // Debayer effect is active and its shader has loaded, else the plain
+    // program for the source kind.
+    getIngress() {
+        const debayerCfg = this.getDebayerConfig();
+        const debayer = debayerCfg ? this.getDebayerIngress(debayerCfg) : null;
+        const entry = debayer ?? this.ingress[this.source.kind];
+        if (!entry?.program) {
+            throw new Error(`Unknown source kind: ${this.source.kind}`);
+        }
+        return {debayerCfg, debayer, entry};
+    }
+
+    // Draw the source uv window center ± span/2 through the ingress into the
+    // bound framebuffer's [0, w) x [0, h) viewport.
+    drawIngress({debayerCfg, debayer, entry}, w, h, center, span) {
+        const gl = this.gl;
+        const {program, uniforms} = entry;
+        gl.viewport(0, 0, w, h);
+        gl.bindVertexArray(this.vao);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
+        gl.useProgram(program);
+        gl.uniform1i(uniforms.source, 0);
+        gl.uniform2f(uniforms.viewSpan, span[0], span[1]);
+        gl.uniform2f(uniforms.center, center[0], center[1]);
+        if (debayer) {
+            gl.uniform2i(uniforms.sourceSize, this.source.width, this.source.height);
+            if (debayerCfg.GAINS) gl.uniform3f(uniforms.gains, ...debayerCfg.GAINS);
+        }
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    // Number of distinct bands the ingress produces: 3 for a Debayer RGB
+    // composite or a browser image, 1 for any other Debayer output, else the
+    // float source's channel count.
+    ingressBandCount() {
+        if (!this.source) return 0;
+        const debayerCfg = this.getDebayerConfig();
+        if (debayerCfg) return debayerCfg.RGB ? 3 : 1;
+        if (this.source.kind === "rgba8") return 3;
+        return this.source.channels;
+    }
+
+    // Source uv rect on screen, clamped to the image. Held at its pre-export
+    // value while an export moves the view.
+    getViewRegion() {
+        if (this.frozenViewRegion) return this.frozenViewRegion;
+        const {w, h} = this.getViewRect();
+        const [spanX, spanY] = this.getViewSpan(w, h);
+        return {
+            u0: clamp(this.centerX - spanX / 2, 0, 1),
+            u1: clamp(this.centerX + spanX / 2, 0, 1),
+            v0: clamp(this.centerY - spanY / 2, 0, 1),
+            v1: clamp(this.centerY + spanY / 2, 0, 1),
+        };
+    }
+
+    makeF32Target(width, height) {
+        const gl = this.gl;
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0,
+                      gl.RGBA, gl.FLOAT, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        const fbo = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+                                gl.TEXTURE_2D, texture, 0);
+        return {fbo, texture, width, height};
+    }
+
+    deleteF32Target(target) {
+        this.deleteFrameBuffer(target.fbo);
+        this.gl.deleteTexture(target.texture);
+    }
+
+    // Read the [0, w) x [0, h) corner of an RGBA32F target into out.
+    readF32Target(target, w, h, out = new Float32Array(w * h * 4)) {
+        const gl = this.gl;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, out);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.defaultFBO);
+        return out;
+    }
+
+    // Ingress for statistics: like the view ingress, but null until the
+    // Debayer shader (if any) has loaded, so stats never see the raw mosaic.
+    getStatsIngress() {
+        if (!this.source) return null;
+        if (!this.sourceTexture && !this.buildSourceTexture()) return null;
+        const ingress = this.getIngress();
+        if (ingress.debayerCfg && !ingress.debayer) return null;
+        return ingress;
+    }
+
+    // Run fn with the source texture point-sampled, so ingress pixels are
+    // exact source values and NaNs don't bleed into their neighbors.
+    withNearestSource(fn) {
+        const gl = this.gl;
+        const setFilter = filter => {
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+        };
+        setFilter(gl.NEAREST);
+        try {
+            return fn();
+        } finally {
+            setFilter(this.floatLinear ? gl.LINEAR : gl.NEAREST);
+        }
+    }
+
+    // The Input Stretch instance when applyEffects would run it (not
+    // disabled, not skipped by solo); statistics passes apply it so they see
+    // the same values the effects downstream of it receive.
+    getStatsStretchStage() {
+        const stack = getEffectStack();
+        const anySolo = stack.some(fx => fx.solo);
+        const fx = stack.find(f => f.name === "Input Stretch");
+        if (!fx?.apply || fx.disabled || (anySolo && !fx.solo)) return null;
+        return fx;
+    }
+
+    // Draw the ingress window center ± span/2 into an exact-size w x h
+    // RGBA32F target, then apply the Input Stretch stage (if any) into a
+    // second one. Exact sizes matter: effect passes take their viewport and
+    // u_resolution from the target. Targets are cached in `targets` by size.
+    // Returns the target holding the result.
+    renderStatsTile(ingress, stage, targets, w, h, center, span) {
+        const get = key => {
+            const k = `${key}:${w}x${h}`;
+            if (!targets.has(k)) targets.set(k, this.makeF32Target(w, h));
+            return targets.get(k);
+        };
+        const raw = get("ingress");
+        this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, raw.fbo);
+        this.withNearestSource(() => this.drawIngress(ingress, w, h, center, span));
+        if (!stage) return raw;
+        const stretched = get("stretched");
+        stage.apply(stage, raw.texture, w, h, 0, stretched);
+        return stretched;
+    }
+
+    // Point-sample a uv region on a res x res grid, after Input Stretch.
+    // Returns interleaved RGBA, or null while the ingress isn't ready.
+    sampleIngress(region, res) {
+        const ingress = this.getStatsIngress();
+        if (!ingress) return null;
+        const targets = new Map();
+        try {
+            const out = this.renderStatsTile(
+                ingress, this.getStatsStretchStage(), targets, res, res,
+                [(region.u0 + region.u1) / 2, (region.v0 + region.v1) / 2],
+                [region.u1 - region.u0, region.v1 - region.v0],
+            );
+            return this.readF32Target(out, res, res);
+        } finally {
+            targets.forEach(t => this.deleteF32Target(t));
+        }
+    }
+
+    // Render a uv region at native resolution (one pixel per getImageSize()
+    // pixel), after Input Stretch, in tiles of at most tileSize², calling
+    // fn(target, w, h) for each. Returns false while the ingress isn't ready.
+    forEachIngressTile(region, tileSize, fn) {
+        const ingress = this.getStatsIngress();
+        if (!ingress) return false;
+        const stage = this.getStatsStretchStage();
+        const [W, H] = this.getImageSize();
+        const x0 = Math.floor(region.u0 * W), x1 = Math.max(x0 + 1, Math.ceil(region.u1 * W));
+        const y0 = Math.floor(region.v0 * H), y1 = Math.max(y0 + 1, Math.ceil(region.v1 * H));
+        const targets = new Map();
+        try {
+            for (let ty = y0; ty < y1; ty += tileSize) {
+                for (let tx = x0; tx < x1; tx += tileSize) {
+                    const w = Math.min(tileSize, x1 - tx);
+                    const h = Math.min(tileSize, y1 - ty);
+                    // Fragment i samples (tx + i + 0.5) / W: a texel center.
+                    const out = this.renderStatsTile(
+                        ingress, stage, targets, w, h,
+                        [(tx + w / 2) / W, (ty + h / 2) / H], [w / W, h / H],
+                    );
+                    fn(out, w, h);
+                }
+            }
+        } finally {
+            targets.forEach(t => this.deleteF32Target(t));
+        }
         return true;
     }
 
