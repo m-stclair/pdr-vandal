@@ -125,6 +125,12 @@ width: fit-content;
     background: #d22;
 }
 
+/* The wrapper only exists to hide the button with its "||" separator; when
+   shown, lay both out as ordinary top-bar flex items. */
+#freezeAnimationGroup:not([hidden]) {
+    display: contents;
+}
+
 
 #exportControls {
   background: #222;

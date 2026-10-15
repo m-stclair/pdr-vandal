@@ -130,11 +130,10 @@ export class GlitchRenderer {
         this.ingress = this.compileIngressPrograms();
         this.debayerIngress = new Map();
         this.lastDebayerKey = "null";
-        // Debayer AUTO gains: inputs they were computed from, the values
-        // written, and a hold so exports never recompute them.
-        this.lastAutoKey = null;
-        this.lastAutoSource = null;
-        this.lastAutoGains = null;
+        // Debayer AUTO gains, per effect instance: the inputs they were
+        // computed from and the values written ({key, source, gains}); plus a
+        // hold so exports never recompute them.
+        this.autoGainState = new WeakMap();
         this.freezeAutoGains = false;
         // Decorrelation Stretch: per-effect statistics cache, the export flag
         // that selects full-resolution statistics, and the view region held
@@ -372,22 +371,23 @@ export class GlitchRenderer {
 
     // Debayer AUTO: when its inputs change, compute per-band gains and write
     // them into the effect config (and so the sliders). A gain the user has
-    // changed since the last auto write turns AUTO off instead.
+    // changed since that instance's last auto write turns its AUTO off
+    // instead. State is kept per instance, so switching which Debayer is
+    // active (disable, delete, reorder) never compares one instance's gains
+    // with another's.
     updateAutoGains() {
         if (this.freezeAutoGains) return;
         const fx = this.getDebayerEffect();
         const cfg = fx ? this.getDebayerConfig() : null;
         if (!cfg?.RGB || fx.config.AUTO !== true
             || this.source?.kind !== "r32f" || !this.source.data) {
-            this.lastAutoKey = null;
-            this.lastAutoGains = null;
+            if (fx) this.autoGainState.delete(fx);
             return;
         }
-        if (this.lastAutoGains
-            && cfg.GAINS.some((g, i) => g !== this.lastAutoGains[i])) {
+        const saved = this.autoGainState.get(fx);
+        if (saved && cfg.GAINS.some((g, i) => g !== saved.gains[i])) {
             fx.config.AUTO = false;
-            this.lastAutoKey = null;
-            this.lastAutoGains = null;
+            this.autoGainState.delete(fx);
             requestUIDraw();
             return;
         }
@@ -400,15 +400,13 @@ export class GlitchRenderer {
                 y0: Math.floor(v0 * height), y1: Math.ceil(v1 * height),
             };
         }
-        const key = JSON.stringify([fx.id, cfg.PATTERN, rect]);
-        if (key === this.lastAutoKey && this.lastAutoSource === this.source) return;
+        const key = JSON.stringify([cfg.PATTERN, rect]);
+        if (saved && saved.key === key && saved.source === this.source) return;
         const gains = computeAutoGains(
             this.source.data, width, height, cfg.PATTERN, rect
         );
         [fx.config.GAIN_R, fx.config.GAIN_G, fx.config.GAIN_B] = gains;
-        this.lastAutoKey = key;
-        this.lastAutoSource = this.source;
-        this.lastAutoGains = gains;
+        this.autoGainState.set(fx, {key, source: this.source, gains});
         requestUIDraw();
     }
 

@@ -472,6 +472,24 @@ async function exportImage(fullImage = false) {
 
 const isAnimationActive = () => getEffectStack().some(fx => isModulating(fx))
 
+// An effect that would actually render animated: modulating, enabled, and
+// not skipped by another effect's solo (as in GlitchRenderer.applyEffects).
+function hasActiveAnimatedEffect() {
+    const stack = getEffectStack();
+    const anySolo = stack.some(fx => fx.solo);
+    return stack.some(fx =>
+        isModulating(fx) && !fx.disabled && (!anySolo || fx.solo)
+    );
+}
+
+// The Freeze Animation button only means something while an effect is
+// animating, so hide it (with its separator) otherwise. Its frozen state is
+// kept while hidden; it is visible, and red, whenever that state matters.
+const freezeAnimationGroup = gid("freezeAnimationGroup");
+function updateFreezeAnimationButton() {
+    freezeAnimationGroup.hidden = !hasActiveAnimatedEffect();
+}
+
 let frameIx = 0;
 
 function tick() {
@@ -522,6 +540,7 @@ function firePipeline(ctx = defaultCtx, t = null) {
 
 
 function renderImage() {
+    updateFreezeAnimationButton();
     firePipeline();
     const animShouldBeRunning = isAnimationActive();
     if (animShouldBeRunning && !animating) {
@@ -549,6 +568,8 @@ function watchUI() {
     Lock.ui = true;
     Dirty.ui = false;
     try {
+        // Turning modulation off requests only a UI draw, so check here too.
+        updateFreezeAnimationButton();
         renderStackUI(getEffectStack(), uiState, gid('effectStack'));
     } finally {
         Lock.ui = false;
