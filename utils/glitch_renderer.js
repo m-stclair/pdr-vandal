@@ -1196,9 +1196,41 @@ export class GlitchRenderer {
         this.centerY = clamp(this.centerY, halfH, 1.0 - halfH);
     }
 
-    setZoom(deltaY) {
+    // Source uv (0-1, top-left origin) under a client-space point, unclamped,
+    // and whether the point is over the displayed image rather than the
+    // letterbox. The output pass flips Y, so top-left screen coordinates map
+    // directly onto the uv convention used by ingress sampling.
+    clientToSourceUV(clientX, clientY) {
+        const canvas = this.gl.canvas;
+        const rect = canvas.getBoundingClientRect();
+        // Client -> drawing buffer pixels, top-left origin.
+        const px = (clientX - rect.left) * (canvas.width / rect.width);
+        const py = (clientY - rect.top) * (canvas.height / rect.height);
+        const viewRect = this.getViewRect();
+        const u = (px - viewRect.x) / viewRect.w;
+        const v = (py - viewRect.y) / viewRect.h;
+        const [spanX, spanY] = this.getViewSpan(viewRect.w, viewRect.h);
+        return {
+            srcU: this.centerX + (u - 0.5) * spanX,
+            srcV: this.centerY + (v - 0.5) * spanY,
+            inImage: u >= 0 && u < 1 && v >= 0 && v < 1,
+        };
+    }
+
+    // Zoom by a wheel delta, about the client-space point (clientX, clientY)
+    // when it is over the image, else about the view center.
+    setZoom(deltaY, clientX, clientY) {
+        const anchor = clientX === undefined ? null : this.clientToSourceUV(clientX, clientY);
         const factor = Math.exp(-deltaY * 0.001);
         this.zoom = Math.max(1.0, Math.min(this.zoom * factor, 32.0));
+        if (anchor?.inImage) {
+            // At a fixed zoom the point under the cursor is the view center
+            // plus a constant offset, so shifting the center by how far that
+            // point moved keeps it under the cursor.
+            const moved = this.clientToSourceUV(clientX, clientY);
+            this.centerX += anchor.srcU - moved.srcU;
+            this.centerY += anchor.srcV - moved.srcV;
+        }
         this.clampCenter();
         this.inputDirty = true;
     }

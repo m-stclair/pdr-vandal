@@ -198,36 +198,10 @@ function delayNextPaint() {
 }
 
 function eventToSourcePixel(e, renderer) {
-    const gl = renderer.gl;
-    const canvas = gl.canvas;
-    const rect = canvas.getBoundingClientRect();
-
-    // Event -> drawing buffer pixels, top-left origin
-    const px = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const py = (e.clientY - rect.top) * (canvas.height / rect.height);
-
-    // Canvas -> displayed image rect
-    const viewRect = renderer.getViewRect();
-    if (
-        px < viewRect.x ||
-        px >= viewRect.x + viewRect.w ||
-        py < viewRect.y ||
-        py >= viewRect.y + viewRect.h
-    ) {
+    const {srcU, srcV, inImage} = renderer.clientToSourceUV(e.clientX, e.clientY);
+    if (!inImage) {
         return null; // cursor is in the letterboxed / unused canvas area
     }
-
-    // Position inside the displayed image, top-left origin normalized.
-    const u = (px - viewRect.x) / viewRect.w;
-    const v = (py - viewRect.y) / viewRect.h;
-
-    // In the output pass we flip Y,
-    // so top-left normalized screen coords map directly to the same logical
-    // 0..1 coordinates used by the ingress sampling expression.
-    const [spanX, spanY] = renderer.getViewSpan(viewRect.w, viewRect.h);
-
-    const srcU = renderer.centerX + (u - 0.5) * spanX;
-    const srcV = renderer.centerY + (v - 0.5) * spanY;
 
     const [imageW, imageH] = renderer.getImageSize();
 

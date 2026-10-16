@@ -29,7 +29,7 @@ export const activeFile = [];
 canvas.addEventListener(
     "wheel", (e) => {
         e.preventDefault();
-        appRenderer.setZoom(e.deltaY);
+        appRenderer.setZoom(e.deltaY, e.clientX, e.clientY);
         requestRender();
     },
     { passive: false }
