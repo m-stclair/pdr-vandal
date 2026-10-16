@@ -29,7 +29,7 @@ export const activeFile = [];
 canvas.addEventListener(
     "wheel", (e) => {
         e.preventDefault();
-        appRenderer.setZoom(e.deltaY);
+        appRenderer.setZoom(e.deltaY, e.clientX, e.clientY);
         requestRender();
     },
     { passive: false }
@@ -177,7 +177,9 @@ export function makeEffectInstance(mod) {
         apply: mod.apply,
         label: mod.name,
         solo: false,
-        isGPU: mod.isGPU
+        isGPU: mod.isGPU,
+        requires_f32: mod.meta?.requires_f32 ?? false,
+        neighborhood: mod.neighborhood,
     }
     if (mod.isGPU) {
         instance.glState = new webGLState(appRenderer, mod.name, instance.id)
@@ -190,6 +192,47 @@ export function makeEffectInstance(mod) {
 export const inputStretchEffect = makeEffectInstance(effectRegistry['Input Stretch']);
 await inputStretchEffect.ready;
 inputStretchEffect.pinned = true;
+
+/**
+ * Make a float array the image source and point Input Stretch at it: its
+ * absolute-clip controls span the data's original range (and the current
+ * clip bounds are carried over into it), and its cached statistics drive
+ * the STDEV / P02_P98 clip modes. Used for PDR products and float test
+ * patterns.
+ * @param {{pixels: Float32Array, width: number, height: number,
+ *   channels: number, scale: number, offset: number, mean: number,
+ *   std: number, p02: number, p98: number}} arrayData pixels normalized as
+ *   (raw - offset) / scale, with statistics in the same normalized units
+ */
+export function loadFloatSource(arrayData) {
+    appRenderer.setFloat32Source(arrayData.pixels, arrayData.width,
+                                 arrayData.height, arrayData.channels,
+                                 arrayData.scale, arrayData.offset);
+
+    const absMinControl = inputStretchEffect.uiLayout.find(obj => obj?.["key"] === "absMin");
+    const absMaxControl = inputStretchEffect.uiLayout.find(obj => obj?.["key"] === "absMax");
+    absMinControl.min = arrayData.offset;
+    absMinControl.max = arrayData.scale + arrayData.offset;
+    absMaxControl.min = arrayData.offset;
+    absMaxControl.max = arrayData.scale + arrayData.offset;
+    const auxCache = inputStretchEffect.auxiliaryCache;
+    inputStretchEffect.config.absMin = (
+        (inputStretchEffect.config.absMin - auxCache.offset) / (auxCache.scale)
+        * arrayData.scale
+        + arrayData.offset
+    )
+    inputStretchEffect.config.absMax = (
+        (inputStretchEffect.config.absMax - auxCache.offset) / (auxCache.scale)
+        * arrayData.scale
+        + arrayData.offset
+    )
+    auxCache.mean = arrayData.mean;
+    auxCache.std = arrayData.std;
+    auxCache.p02 = arrayData.p02;
+    auxCache.p98 = arrayData.p98;
+    auxCache.scale = arrayData.scale;
+    auxCache.offset = arrayData.offset;
+}
 
 // state save/load
 

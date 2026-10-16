@@ -55,7 +55,9 @@ const effectFiles = [
     // "threshold.js",
     "inputstretch.js",
     "fill_nan.js",
-    "unsharp.js"
+    "unsharp.js",
+    "debayer.js",
+    "decorrelation_stretch.js"
 ]
 import {makeRegistryEntry} from "./utils/registry_utils.js";
 

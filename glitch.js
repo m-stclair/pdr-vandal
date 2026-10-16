@@ -1,6 +1,7 @@
 import {
     pdrErrorModal,
     pdrErrorModalContent,
+    setupAboutModal,
     setupExportImage,
     setupHelpModal,
     setupPaneDrag,
@@ -18,6 +19,7 @@ import {
     getEffectStack,
     getAnimationFrozen,
     inputStretchEffect,
+    loadFloatSource,
     Lock,
     makeEffectInstance,
     appRenderer,
@@ -30,19 +32,22 @@ import {
     activeFile
 } from "./state.js";
 // import "./tools/debugPane.js";
-import {downloadBlob, formatFloatWidth, gid, vandalStamp} from "./utils/helpers.js";
+import {downloadBlob, formatFloatWidth, formatSignificant, gid, vandalStamp} from "./utils/helpers.js";
 import {renderStackUI} from "./ui_builder.js";
 import {effectRegistry} from "./registry.js";
 import {resolveAnim} from "./utils/animutils.js";
 
 // noinspection ES6UnusedImports
 import {EffectPicker} from './components/effectpicker.js'
+import {HistogramPanel} from './components/histogram.js'
 import {pdrInitializedFlag, initPDR, getPyodide, getProductInfo, getArrayImage, flushPdrCache} from "./pdr.js";
 import {drawPattern} from "./test_patterns.js";
 import {getAppPresetView} from "./utils/presets.js";
 
 
 let animating = false;
+// Histogram of the displayed image (created in appSetup).
+export let histogramPanel = null;
 let startTime = null;
 let timePhase = 0;
 
@@ -105,33 +110,7 @@ async function handlePdrBandSelect() {
             return;
         }
 
-        appRenderer.setFloat32Source(arrayData.pixels, arrayData.width,
-                                     arrayData.height, arrayData.channels,
-                                     arrayData.scale, arrayData.offset);
-
-        const absMinControl = inputStretchEffect.uiLayout.find(obj => obj?.["key"] === "absMin");
-        const absMaxControl = inputStretchEffect.uiLayout.find(obj => obj?.["key"] === "absMax");
-        absMinControl.min = arrayData.offset;
-        absMinControl.max = arrayData.scale + arrayData.offset;
-        absMaxControl.min = arrayData.offset;
-        absMaxControl.max = arrayData.scale + arrayData.offset;
-        const auxCache = inputStretchEffect.auxiliaryCache;
-        inputStretchEffect.config.absMin = (
-            (inputStretchEffect.config.absMin - auxCache.offset) / (auxCache.scale)
-            * arrayData.scale
-            + arrayData.offset
-        )
-        inputStretchEffect.config.absMax = (
-            (inputStretchEffect.config.absMax - auxCache.offset) / (auxCache.scale)
-            * arrayData.scale
-            + arrayData.offset
-        )
-        auxCache.mean = arrayData.mean;
-        auxCache.std = arrayData.std;
-        auxCache.p02 = arrayData.p02;
-        auxCache.p98 = arrayData.p98;
-        auxCache.scale = arrayData.scale;
-        auxCache.offset = arrayData.offset;
+        loadFloatSource(arrayData);
         gid("activeFile").innerText = pdrProductInfo.name;
         activeFile[0] = pdrProductInfo.name;
         resizeAndRedraw();
@@ -222,38 +201,12 @@ function delayNextPaint() {
 }
 
 function eventToSourcePixel(e, renderer) {
-    const gl = renderer.gl;
-    const canvas = gl.canvas;
-    const rect = canvas.getBoundingClientRect();
-
-    // Event -> drawing buffer pixels, top-left origin
-    const px = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const py = (e.clientY - rect.top) * (canvas.height / rect.height);
-
-    // Canvas -> displayed image rect
-    const viewRect = renderer.getViewRect();
-    if (
-        px < viewRect.x ||
-        px >= viewRect.x + viewRect.w ||
-        py < viewRect.y ||
-        py >= viewRect.y + viewRect.h
-    ) {
+    const {srcU, srcV, inImage} = renderer.clientToSourceUV(e.clientX, e.clientY);
+    if (!inImage) {
         return null; // cursor is in the letterboxed / unused canvas area
     }
 
-    // Position inside the displayed image, top-left origin normalized.
-    const u = (px - viewRect.x) / viewRect.w;
-    const v = (py - viewRect.y) / viewRect.h;
-
-    // In the output pass we flip Y,
-    // so top-left normalized screen coords map directly to the same logical
-    // 0..1 coordinates used by the ingress sampling expression.
-    const [spanX, spanY] = renderer.getViewSpan(viewRect.w, viewRect.h);
-
-    const srcU = renderer.centerX + (u - 0.5) * spanX;
-    const srcV = renderer.centerY + (v - 0.5) * spanY;
-
-    const [imageW, imageH] = renderer.getSourceSize();
+    const [imageW, imageH] = renderer.getImageSize();
 
     const cu = Math.max(0, Math.min(1, srcU));
     const cv = Math.max(0, Math.min(1, srcV));
@@ -267,6 +220,8 @@ function eventToSourcePixel(e, renderer) {
 }
 
 const coordOutput = gid("coordOutput");
+// last canvas mousemove, so the readout can refresh after a re-render
+let lastCoordEvent = null;
 
 function renderCoords(e, renderer, output) {
     if (!renderer.source?.data) {
@@ -277,23 +232,28 @@ function renderCoords(e, renderer, output) {
         return;
     }
     const {x, y} = sourcePixel;
-    let coordText = `(${Math.floor(x)}, ${Math.floor(y)})`;
-    const startIndex = (x + y * renderer.source.width) * renderer.source.channels
+    const [imageW, imageH] = renderer.getImageSize();
+    let coordText = `(${Math.floor(x)}, ${Math.floor(y)}) of ${imageW}×${imageH}`;
+    const [rx, ry] = renderer.imageToSourcePixel(x, y);
+    const startIndex = (rx + ry * renderer.source.width) * renderer.source.channels
     const values = [];
     for (let i = 0; i < renderer.source.channels; i++) {
         const value = renderer.source.data[startIndex + i];
         const unscaled = value * renderer.source.scale + renderer.source.offset;
-        const displayPrecision = 4 + Math.log10(unscaled);
-        values.push(formatFloatWidth(unscaled, displayPrecision));
+        values.push(formatSignificant(unscaled));
     }
     const valText = values.join(", ");
     output.innerText = `${coordText} -- ${valText}`;
 }
 
 
-appRenderer.gl.canvas.addEventListener(
-    'mousemove', (e) => renderCoords(e, appRenderer, coordOutput)
-)
+appRenderer.gl.canvas.addEventListener('mousemove', (e) => {
+    lastCoordEvent = e;
+    renderCoords(e, appRenderer, coordOutput);
+})
+appRenderer.gl.canvas.addEventListener('mouseleave', () => {
+    lastCoordEvent = null;
+})
 
 
 function lockApp() {
@@ -463,6 +423,24 @@ async function exportImage(fullImage = false) {
 
 const isAnimationActive = () => getEffectStack().some(fx => isModulating(fx))
 
+// An effect that would actually render animated: modulating, enabled, and
+// not skipped by another effect's solo (as in GlitchRenderer.applyEffects).
+function hasActiveAnimatedEffect() {
+    const stack = getEffectStack();
+    const anySolo = stack.some(fx => fx.solo);
+    return stack.some(fx =>
+        isModulating(fx) && !fx.disabled && (!anySolo || fx.solo)
+    );
+}
+
+// The Freeze Animation button only means something while an effect is
+// animating, so hide it (with its separator) otherwise. Its frozen state is
+// kept while hidden; it is visible, and red, whenever that state matters.
+const freezeAnimationGroup = gid("freezeAnimationGroup");
+function updateFreezeAnimationButton() {
+    freezeAnimationGroup.hidden = !hasActiveAnimatedEffect();
+}
+
 let frameIx = 0;
 
 function tick() {
@@ -508,10 +486,13 @@ function firePipeline(ctx = defaultCtx, t = null) {
     if (!appRenderer.source) return;
     const finalTexture = appRenderer.applyEffects(time);
     appRenderer.writeToCanvas(finalTexture);
+    if (lastCoordEvent) renderCoords(lastCoordEvent, appRenderer, coordOutput);
+    histogramPanel?.scheduleUpdate(time, animating);
 }
 
 
 function renderImage() {
+    updateFreezeAnimationButton();
     firePipeline();
     const animShouldBeRunning = isAnimationActive();
     if (animShouldBeRunning && !animating) {
@@ -539,6 +520,8 @@ function watchUI() {
     Lock.ui = true;
     Dirty.ui = false;
     try {
+        // Turning modulation off requests only a UI draw, so check here too.
+        updateFreezeAnimationButton();
         renderStackUI(getEffectStack(), uiState, gid('effectStack'));
     } finally {
         Lock.ui = false;
@@ -578,6 +561,7 @@ async function appSetup() {
     if ('serviceWorker' in navigator) {
         await navigator.serviceWorker.register(workerURL);
     }
+    histogramPanel = new HistogramPanel(appRenderer, getEffectStack);
     const stackHeader = document.getElementById("effectStackHeader")
     const picker = document.createElement("effect-picker")
     stackHeader.appendChild(picker);
@@ -627,11 +611,15 @@ async function appSetup() {
     setupPaneDrag();
     setupPDRErrorModal(unlockApp);
     setupHelpModal(lockApp, unlockApp);
+    setupAboutModal(lockApp, unlockApp);
     setupWindow(resizeAndRedraw);
     await drawPattern('spiral');
     setupInputStretch();
     renderLoop();
     uiLoop();
+    // Startup is complete (initial pattern loaded, loops running); tests
+    // wait for this before driving the app.
+    document.body.dataset.ready = "1";
 }
 
 

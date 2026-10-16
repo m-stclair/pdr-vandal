@@ -36,6 +36,7 @@ export default {
         /** @type {UniformSpec} */
         const uniformSpec = {
             u_resolution: {value: [width, height], type: "vec2"},
+            u_pixelStep: {value: instance.glState.renderer.imagePixelStep(), type: "vec2"},
             u_rawAmount: {value: rawAmount, type: "float"},
             u_slopeAmount: {value: slopeAmount, type: "float"},
             u_hillAmount: {value: hillAmount, type: "float"},
@@ -54,6 +55,8 @@ export default {
     },
     glState: null,
     isGPU: true,
+    // Reads neighbors up to two image pixels away.
+    neighborhood: () => 2,
     defaultConfig: {
         rawAmount: 0.25,
         slopeAmount: 0.5,
@@ -124,7 +127,8 @@ export default {
 export const effectMeta = {
   group: "Utility",
   tags: ["color", "brightness", "contrast", "saturation"],
-  description: "Creates slope maps, curvature maps, and hillshade-like effects from discrete differences.",
+  description: "Creates slope maps, curvature maps, and hillshade-like effects from discrete " +
+      "differences, measured per image pixel, so shading is consistent at any zoom and in exports.",
   backend: "gpu",
   canAnimate: true,
   realtimeSafe: true,

@@ -29,6 +29,52 @@ const {
     'TANH'
 ])
 
+/**
+ * [min, max] in normalized source units that Input Stretch maps to [0, 1]
+ * before its stretch curve. Shared with Decorrelation Stretch, which needs
+ * the same bounds to express its statistics in original data units.
+ */
+export function inputStretchBounds(
+    instance,
+    clipMode = instance.config.clipMode,
+    stdevClip = instance.config.stdevClip,
+    absMin = instance.config.absMin,
+    absMax = instance.config.absMax,
+) {
+    const clipModeN = Number(clipMode);
+    const mean = instance.auxiliaryCache.mean;
+    const std = instance.auxiliaryCache.std;
+    const p02 = instance.auxiliaryCache.p02;
+    const p98 = instance.auxiliaryCache.p98;
+    const scale = instance.auxiliaryCache.scale;
+    const offset = instance.auxiliaryCache.offset;
+    let min, max;
+
+    if (clipModeN === ClipEnum.STDEV) {
+        if (mean === undefined || std === undefined) {;
+            [min, max] = [0, 1];
+        } else {
+            min = mean - stdevClip * std;
+            min = min < 0 ? 0 : min;
+            max = mean + stdevClip * std;
+            max = max > 1 ? 1 : max;
+        }
+    } else if (clipModeN === ClipEnum.P02_P98) {
+        if (p02 === undefined || p98 === undefined) {
+            [min, max] = [0, 1];
+        } else {
+            [min, max] = [p02, p98];
+        }
+    }
+    else if (clipModeN === ClipEnum.ABSOLUTE) {
+        [min, max] = [(absMin - offset) / scale, (absMax - offset) / scale];
+    }
+    else {
+        [min, max] = [0, 1];
+    }
+    return [min, max];
+}
+
 /** @typedef {import('../glitchtypes.ts').EffectModule} EffectModule */
 /** @type {EffectModule} */
 export default {
@@ -91,37 +137,7 @@ export default {
             absMin, absMax
         } = resolveAnimAll(instance.config, t);
 
-        const clipModeN = Number(clipMode);
-        const mean = instance.auxiliaryCache.mean;
-        const std = instance.auxiliaryCache.std;
-        const p02 = instance.auxiliaryCache.p02;
-        const p98 = instance.auxiliaryCache.p98;
-        const scale = instance.auxiliaryCache.scale;
-        const offset = instance.auxiliaryCache.offset;
-        let min, max;
-
-        if (clipModeN === ClipEnum.STDEV) {
-            if (mean === undefined || std === undefined) {;
-                [min, max] = [0, 1];
-            } else {
-                min = mean - stdevClip * std;
-                min = min < 0 ? 0 : min;
-                max = mean + stdevClip * std;
-                max = max > 1 ? 1 : max;
-            }
-        } else if (clipModeN === ClipEnum.P02_P98) {
-            if (p02 === undefined || p98 === undefined) {
-                [min, max] = [0, 1];
-            } else {
-                [min, max] = [p02, p98];
-            }
-        }
-        else if (clipModeN === ClipEnum.ABSOLUTE) {
-            [min, max] = [(absMin - offset) / scale, (absMax - offset) / scale];
-        }
-        else {
-            [min, max] = [0, 1];
-        }
+        const [min, max] = inputStretchBounds(instance, clipMode, stdevClip, absMin, absMax);
         const uniformSpec = {
             u_resolution: {type: "vec2", value: [width, height]},
             u_min: {type: "float", value: min},
@@ -157,3 +173,5 @@ export const effectMeta = {
     notInRandom: true,
     notPickable: true
 }
+
+export {ClipEnum, StretchEnum};

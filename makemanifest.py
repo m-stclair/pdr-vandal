@@ -4,14 +4,13 @@ import os
 ROOT_INCLUDE = []
 
 def findish():
+    # Only the build output, minus dotfiles (e.g. macOS .DS_Store): every
+    # entry must exist when deployed, since cache.addAll() is all-or-nothing.
     manifest_entries = []
-    for dn, _, fns in os.walk("."):
-        if dn == "." or ".git" in dn or ".idea" in dn or "__pycache__" in dn:
-            continue
-        if "build" not in dn:
-            continue
+    for dn, _, fns in os.walk("./build"):
         manifest_entries += [
-            f"{dn}/{fn}" for fn in fns if "shader_manifest" not in fn
+            f"{dn}/{fn}" for fn in fns
+            if "shader_manifest" not in fn and not fn.startswith(".")
         ]
     return manifest_entries
 

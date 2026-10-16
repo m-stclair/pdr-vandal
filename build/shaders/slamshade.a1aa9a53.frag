@@ -15,6 +15,8 @@ uniform float u_hillAmount;
 uniform float u_outScale;
 
 uniform vec2 u_resolution;
+// Texture-coordinate step of one image pixel.
+uniform vec2 u_pixelStep;
 
 #ifndef METRIC_ORD
 #define METRIC_ORD 2
@@ -30,21 +32,10 @@ uniform vec2 u_resolution;
 #define HILLSCALE 4.0
 #define SLAMSCALE 6.0
 
-ivec2 fieldSize() {
-    return textureSize(u_image, 0);
-}
-
-ivec2 uvToCoord(vec2 uv) {
-    ivec2 sz = fieldSize();
-    vec2 p = clamp(uv, 0.0, 1.0 - 1e-7) * vec2(sz);
-    return clamp(ivec2(floor(p)), ivec2(0), sz - 1);
-}
-
-float fetchField(ivec2 p) {
-    ivec2 sz = fieldSize();
-    p = clamp(p, ivec2(0), sz - 1);
-    vec3 texel = texelFetch(u_image, p, 0).rgb;
-    return (texel.r + texel.g + texel.b) / 3.0;
+// Field value (mean of RGB), with coordinates clamped to the image.
+float field(vec2 uv) {
+    vec3 c = texture(u_image, clamp(uv, 0.0, 1.0)).rgb;
+    return (c.r + c.g + c.b) / 3.0;
 }
 
 float metricCombine(float a, float b) {
@@ -65,25 +56,30 @@ float metricCombine(float a, float b) {
 
 void main() {
     vec2 uv = gl_FragCoord.xy / u_resolution;
-    ivec2 p = uvToCoord(uv);
+    // Differences over one image pixel, or over one display pixel when an
+    // image pixel is smaller (zoomed out) so neighbors never coincide, then
+    // rescaled to change per image pixel: slopes are the same at any zoom and
+    // in a full-image export, where both steps are one texel.
+    vec2 step = max(u_pixelStep, 1.0 / u_resolution);
+    vec2 dist = step / u_pixelStep;   // step length in image pixels (>= 1)
 
-    bool hasNorth1 = (p.y >= 1);
-    bool hasWest1  = (p.x >= 1);
-    bool hasNorth2 = (p.y >= 2);
-    bool hasWest2  = (p.x >= 2);
+    bool hasNorth1 = uv.y - step.y >= 0.0;
+    bool hasWest1  = uv.x - step.x >= 0.0;
+    bool hasNorth2 = uv.y - 2.0 * step.y >= 0.0;
+    bool hasWest2  = uv.x - 2.0 * step.x >= 0.0;
 
-    float c  = fetchField(p);
-    float n1 = hasNorth1 ? fetchField(p + ivec2( 0, -1)) : c;
-    float w1 = hasWest1  ? fetchField(p + ivec2(-1,  0)) : c;
-    float n2 = hasNorth2 ? fetchField(p + ivec2( 0, -2)) : n1;
-    float w2 = hasWest2  ? fetchField(p + ivec2(-2,  0)) : w1;
+    float c  = field(uv);
+    float n1 = hasNorth1 ? field(uv - vec2(0.0, step.y)) : c;
+    float w1 = hasWest1  ? field(uv - vec2(step.x, 0.0)) : c;
+    float n2 = hasNorth2 ? field(uv - vec2(0.0, 2.0 * step.y)) : n1;
+    float w2 = hasWest2  ? field(uv - vec2(2.0 * step.x, 0.0)) : w1;
 
-    float dy  = hasNorth1 ? (c  - n1) : 0.0;
-    float dx  = hasWest1  ? (c  - w1) : 0.0;
-    float dyPrev = hasNorth2 ? (n1 - n2) : 0.0;
-    float dxPrev = hasWest2  ? (w1 - w2) : 0.0;
-    float dyy = dy - dyPrev;
-    float dxx = dx - dxPrev;
+    float dy  = hasNorth1 ? (c  - n1) / dist.y : 0.0;
+    float dx  = hasWest1  ? (c  - w1) / dist.x : 0.0;
+    float dyPrev = hasNorth2 ? (n1 - n2) / dist.y : 0.0;
+    float dxPrev = hasWest2  ? (w1 - w2) / dist.x : 0.0;
+    float dyy = (dy - dyPrev) / dist.y;
+    float dxx = (dx - dxPrev) / dist.x;
 
     float raw   = c;
     float slope = metricCombine(dy, dx);

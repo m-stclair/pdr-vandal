@@ -1,24 +1,30 @@
-import {clearRenderCache, resizeAndRedraw, appRenderer, activeFile} from "./state.js";
+import {clearRenderCache, resizeAndRedraw, appRenderer, activeFile, loadFloatSource} from "./state.js";
 import {gid} from "./utils/helpers.js";
 import {hsv2Rgb} from "./utils/colorutils.js";
+import {makeBayerTestMosaic} from "./utils/bayer_pattern.js";
+import {approxPercentiles} from "./utils/stretch.js";
 import {placeholderOption} from "./ui.js";
 
 
+// Resolves once the pattern is the image source, so callers that await
+// drawPattern() know the source has actually changed.
 function uploadFromCanvas(ocv, name="") {
-    ocv.convertToBlob().then(blob => {
+    gid("activeFile").innerText = `${name} test pattern`;
+    activeFile[0] = `${name} test pattern`;
+    return ocv.convertToBlob().then(blob => new Promise((resolve, reject) => {
         const url = URL.createObjectURL(blob);
         const img = new Image(ocv.width, ocv.height);
         img.onload = () => {
             appRenderer.setHTMLSource(img);
             resizeAndRedraw();
+            resolve();
         };
+        img.onerror = reject;
         clearRenderCache();
         img.src = url;
-    }).catch(error => {
-        console.error("Failed to convert OffscreenCanvas to Blob:", error);
+    })).catch(error => {
+        console.error("Failed to load test pattern:", error);
     });
-    gid("activeFile").innerText = `${name} test pattern`;
-    activeFile[0] = `${name} test pattern`;
 }
 
 export async function drawSquare(color='black') {
@@ -26,7 +32,7 @@ export async function drawSquare(color='black') {
     const ctx = ocv.getContext('2d')
     ctx.fillStyle = color;
     ctx.fillRect(0, 0, 2048, 2048);
-    uploadFromCanvas(ocv, color);
+    await uploadFromCanvas(ocv, color);
 }
 
 export async function drawRGBSquares() {
@@ -50,7 +56,7 @@ export async function drawRGBSquares() {
             squareSize
         );
     });
-    uploadFromCanvas(ocv, "RGB square");
+    await uploadFromCanvas(ocv, "RGB square");
 }
 
 export async function drawBlank() {
@@ -58,7 +64,7 @@ export async function drawBlank() {
     const ctx = ocv.getContext('2d');
     ctx.fillStyle = 'black';
     ctx.fillRect(0, 0, 1, 1);
-    uploadFromCanvas(ocv, "blank");
+    await uploadFromCanvas(ocv, "blank");
 }
 
 export async function drawGrayscaleRamp() {
@@ -70,7 +76,7 @@ export async function drawGrayscaleRamp() {
     grad.addColorStop(1, 'white');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, ocv.width, ocv.height);
-    uploadFromCanvas(ocv, "gray ramp");
+    await uploadFromCanvas(ocv, "gray ramp");
 }
 
 export async function drawHueWheel() {
@@ -106,7 +112,7 @@ export async function drawHueWheel() {
         }
     }
     context.putImageData(imageData, 0, 0);
-    uploadFromCanvas(ocv, "hue wheel");
+    await uploadFromCanvas(ocv, "hue wheel");
 }
 
 async function drawSpiral(numLoops = 5, lineWidth = 4) {
@@ -136,7 +142,7 @@ async function drawSpiral(numLoops = 5, lineWidth = 4) {
     context.lineWidth = lineWidth;
     context.strokeStyle = 'black';
     context.stroke();
-    uploadFromCanvas(canvas, "spiral");
+    await uploadFromCanvas(canvas, "spiral");
 }
 
 async function drawSinusoid(amplitude = 512, frequency = 0.05) {
@@ -158,7 +164,32 @@ async function drawSinusoid(amplitude = 512, frequency = 0.05) {
     context.strokeStyle = 'black';
     context.lineWidth = 4;
     context.stroke();
-    uploadFromCanvas(canvas, "sinusoid")
+    await uploadFromCanvas(canvas, "sinusoid")
+}
+
+// Simulated raw RGGB frame for testing and demoing the Debayer effect:
+// loaded as single-band float data, like a raw PDS image, with the
+// statistics Input Stretch's clip modes use (already in [0, 1], so scale 1
+// and offset 0).
+export async function drawBayerTest() {
+    const size = 2048;
+    const pixels = makeBayerTestMosaic(size);
+    let sum = 0, sum2 = 0;
+    for (const v of pixels) {
+        sum += v;
+        sum2 += v * v;
+    }
+    const n = pixels.length;
+    const mean = sum / n;
+    const [p02, p98] = approxPercentiles(pixels, 2, 98);
+    loadFloatSource({
+        pixels, width: size, height: size, channels: 1, scale: 1, offset: 0,
+        mean, std: Math.sqrt(Math.max(0, sum2 / n - mean * mean)), p02, p98,
+    });
+    clearRenderCache();
+    resizeAndRedraw();
+    gid("activeFile").innerText = "bayer rggb test pattern";
+    activeFile[0] = "bayer rggb test pattern";
 }
 
 export async function drawPattern(pattern) {
@@ -187,6 +218,9 @@ export async function drawPattern(pattern) {
         case "blank":
             await drawBlank();
             break;
+        case "bayer rggb":
+            await drawBayerTest();
+            break;
         default:
             throw new Error(`unknown pattern ${pattern}`);
 
@@ -198,7 +232,7 @@ export async function drawPattern(pattern) {
 export function populateTestSelect() {
     const testSelect = gid("test-pattern-select");
     testSelect.appendChild(placeholderOption("-- pattern --"));
-    ["black", "white", "rgb", "gray", "wheel", "spiral", "sinusoid"].forEach(type => {
+    ["black", "white", "rgb", "gray", "wheel", "spiral", "sinusoid", "bayer rggb"].forEach(type => {
         const opt = document.createElement("option");
         opt.value = opt.text = type;
         testSelect.appendChild(opt);

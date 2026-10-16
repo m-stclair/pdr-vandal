@@ -1,0 +1,6 @@
+# Test dependencies. Browser tests also need: playwright install chromium
+pytest>=8
+playwright>=1.40
+numpy>=1.26,<2.5  # marslab 0.9.28's DCS needs real-valued np.linalg.eig (2.5+ returns complex)
+pdr>=1.4      # imported by pdrview.py
+multidict     # imported by pdrview.py

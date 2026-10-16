@@ -110,6 +110,16 @@ export function uuidv4() {
 
 export {gid, gen}
 
+// Data values for display at a fixed number of significant digits, whatever
+// their magnitude or sign (e.g. 0.0869412, -48.3824, 1.85941e-6), with
+// trailing zeros trimmed.
+export function formatSignificant(val, digits = 6) {
+    if (!Number.isFinite(val)) return String(val);
+    const s = val.toPrecision(digits);
+    if (s.includes("e")) return s.replace(/\.?0+e/, "e");
+    return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
+}
+
 export function formatFloatWidth(val, maxChars = 5) {
     if (!Number.isFinite(val)) return String(val).slice(0, maxChars);
     if (val === 0) return val;
