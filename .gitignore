@@ -5,7 +5,7 @@ _*.js
 *.mjs
 .idea/
 scratch*
-__pycache__/*
+__pycache__/
 test_data/*
 .DS_Store
 .pytest_cache/
