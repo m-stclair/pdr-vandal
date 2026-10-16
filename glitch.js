@@ -39,12 +39,15 @@ import {resolveAnim} from "./utils/animutils.js";
 
 // noinspection ES6UnusedImports
 import {EffectPicker} from './components/effectpicker.js'
+import {HistogramPanel} from './components/histogram.js'
 import {pdrInitializedFlag, initPDR, getPyodide, getProductInfo, getArrayImage, flushPdrCache} from "./pdr.js";
 import {drawPattern} from "./test_patterns.js";
 import {getAppPresetView} from "./utils/presets.js";
 
 
 let animating = false;
+// Histogram of the displayed image (created in appSetup).
+export let histogramPanel = null;
 let startTime = null;
 let timePhase = 0;
 
@@ -484,6 +487,7 @@ function firePipeline(ctx = defaultCtx, t = null) {
     const finalTexture = appRenderer.applyEffects(time);
     appRenderer.writeToCanvas(finalTexture);
     if (lastCoordEvent) renderCoords(lastCoordEvent, appRenderer, coordOutput);
+    histogramPanel?.scheduleUpdate(time, animating);
 }
 
 
@@ -557,6 +561,7 @@ async function appSetup() {
     if ('serviceWorker' in navigator) {
         await navigator.serviceWorker.register(workerURL);
     }
+    histogramPanel = new HistogramPanel(appRenderer, getEffectStack);
     const stackHeader = document.getElementById("effectStackHeader")
     const picker = document.createElement("effect-picker")
     stackHeader.appendChild(picker);

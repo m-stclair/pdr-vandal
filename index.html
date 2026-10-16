@@ -164,6 +164,20 @@
             <select id="image-band-select"></select>
         </div>
         </div>
+        <details id="histogramPanel" open>
+            <summary>
+                <span class="hist-title">histogram</span>
+                <span class="hist-toggle" id="histRegion"
+                      title="Whole image (as at fit-to-window) or the current view"><button
+                        data-region="image">image</button><button
+                        data-region="view" class="active">view</button></span>
+                <span class="hist-toggle" id="histScale" title="Count axis scale"><button
+                        data-scale="log" class="active">log</button><button
+                        data-scale="lin">lin</button></span>
+            </summary>
+            <canvas id="histogramCanvas"></canvas>
+            <div id="histogramInfo"></div>
+        </details>
         <div id="effectStackHeader"></div>
         <div class="toggle-bar" id="toggle-stack-bar">
             <span class="arrow">⇓ ⇓ ⇓ ⇓ ⇓ ⇓ ⇓ </span> <!-- Down arrow for expand -->

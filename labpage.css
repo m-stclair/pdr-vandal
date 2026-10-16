@@ -596,3 +596,82 @@ html {
   scrollbar-color: #555 #333; /* Thumb and track color */
 }
 
+/* Histogram of the displayed image, above the effect picker. Matches the
+   picker: #222 panel, #333 rules, #1a1a1a wells, #0af for active toggles. */
+#histogramPanel {
+    flex-shrink: 0;
+    padding: 0.25rem 0.5rem 0.4rem;
+    background: #222;
+    border-top: 1px solid #333;
+    border-bottom: 1px solid #333;
+    font-size: 0.8rem;
+}
+
+#histogramPanel > summary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    color: #ccc;
+    padding: 0.15rem 0;
+    list-style: none;
+}
+
+#histogramPanel > summary::-webkit-details-marker {
+    display: none;
+}
+
+#histogramPanel > summary .hist-title::before {
+    content: "▸ ";
+    color: #888;
+}
+
+#histogramPanel[open] > summary .hist-title::before {
+    content: "▾ ";
+}
+
+#histogramPanel > summary .hist-title {
+    font-weight: 700;
+    margin-right: auto;
+}
+
+.hist-toggle {
+    display: inline-flex;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.hist-toggle button {
+    font: inherit;
+    font-size: 0.75rem;
+    padding: 0.1rem 0.45rem;
+    background: #444;
+    color: #ccc;
+    border: none;
+    cursor: pointer;
+}
+
+.hist-toggle button.active {
+    background: #0af;
+    color: #111;
+}
+
+#histogramCanvas {
+    display: block;
+    width: 100%;
+    height: 80px;
+    margin-top: 0.25rem;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 4px;
+    cursor: crosshair;
+}
+
+#histogramInfo {
+    min-height: 1.2em;
+    margin-top: 0.2rem;
+    color: #888;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

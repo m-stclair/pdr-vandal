@@ -604,16 +604,45 @@ export class GlitchRenderer {
     // Decorrelation Stretch recomputes its statistics at full resolution,
     // over the region that was on screen.
     async createExport(t, fullImage) {
-        this.freezeAutoGains = true;
-        this.frozenViewRegion = this.getViewRegion();
         this.dcsExport = true;
         try {
-            return this.renderExport(t, fullImage);
+            return this.withFrozenView(() => this.renderExport(t, fullImage));
         } finally {
-            this.freezeAutoGains = false;
-            this.frozenViewRegion = null;
             this.dcsExport = false;
         }
+    }
+
+    // Run fn, which may render something other than the on-screen view,
+    // with view-dependent state held: Debayer AUTO gains don't recompute,
+    // and statistics that track the current view keep using the region on
+    // screen. Re-entrant.
+    withFrozenView(fn) {
+        const saved = [this.freezeAutoGains, this.frozenViewRegion];
+        this.frozenViewRegion = this.getViewRegion();
+        this.freezeAutoGains = true;
+        try {
+            return fn();
+        } finally {
+            [this.freezeAutoGains, this.frozenViewRegion] = saved;
+        }
+    }
+
+    // A point sample of the whole image as displayed at fit-to-window: the
+    // stack is rendered offscreen at zoom 1, then the view is restored (and
+    // re-ingested on the next render). Null without a source.
+    sampleWholeImage(t, maxSide = 256) {
+        const saved = [this.zoom, this.centerX, this.centerY];
+        return this.withFrozenView(() => {
+            try {
+                [this.zoom, this.centerX, this.centerY] = [1.0, 0.5, 0.5];
+                this.inputDirty = true;
+                const tex = this.applyEffects(t);
+                return tex ? this.sampleView(tex, maxSide) : null;
+            } finally {
+                [this.zoom, this.centerX, this.centerY] = saved;
+                this.inputDirty = true;
+            }
+        });
     }
 
     renderExport(t, fullImage) {
@@ -1157,8 +1186,9 @@ export class GlitchRenderer {
     }
 
     // Draw the visible part of a working-resolution texture into the bound
-    // framebuffer's current viewport.
-    drawView(tex, flipY) {
+    // framebuffer's current viewport, interpolated as on screen or, with
+    // pointSample, taking each output pixel from the nearest working texel.
+    drawView(tex, flipY, pointSample = false) {
         const gl = this.gl;
         if (this.outputProg === null) {
             this.outputProg = this.compileProgram(outputVertSrc, outputFragSrc);
@@ -1170,7 +1200,7 @@ export class GlitchRenderer {
         gl.bindVertexArray(this.vao);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, tex);
-        const filter = this.floatLinear ? gl.LINEAR : gl.NEAREST;
+        const filter = this.floatLinear && !pointSample ? gl.LINEAR : gl.NEAREST;
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
         const loc = name => gl.getUniformLocation(this.outputProg, name);
@@ -1193,11 +1223,27 @@ export class GlitchRenderer {
     // top of the view.
     readViewPixels(tex) {
         const {w, h} = this.getViewRect();
+        return this.renderView(tex, w, h, false);
+    }
+
+    // A uniform point sample of the displayed view, at most maxSide pixels
+    // on its long side. Point sampling keeps sampled values real (no
+    // blending of neighbors, no NaN spread): zoomed out each sample is one
+    // displayed pixel; zoomed in, one visible image pixel.
+    sampleView(tex, maxSide = 256) {
+        const {w, h} = this.getViewRect();
+        const k = Math.min(1, maxSide / Math.max(w, h));
+        return this.renderView(
+            tex, Math.max(1, Math.round(w * k)), Math.max(1, Math.round(h * k)), true
+        );
+    }
+
+    renderView(tex, w, h, pointSample) {
         const target = this.makeF32Target(w, h);
         try {
             this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, target.fbo);
             this.gl.viewport(0, 0, w, h);
-            this.drawView(tex, false);
+            this.drawView(tex, false, pointSample);
             return {pixels: this.readF32Target(target, w, h), w, h};
         } finally {
             this.deleteF32Target(target);
