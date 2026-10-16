@@ -1,6 +1,8 @@
-import {clearRenderCache, resizeAndRedraw, appRenderer, activeFile} from "./state.js";
+import {clearRenderCache, resizeAndRedraw, appRenderer, activeFile, loadFloatSource} from "./state.js";
 import {gid} from "./utils/helpers.js";
 import {hsv2Rgb} from "./utils/colorutils.js";
+import {makeBayerTestMosaic} from "./utils/bayer_pattern.js";
+import {approxPercentiles} from "./utils/stretch.js";
 import {placeholderOption} from "./ui.js";
 
 
@@ -161,6 +163,31 @@ async function drawSinusoid(amplitude = 512, frequency = 0.05) {
     uploadFromCanvas(canvas, "sinusoid")
 }
 
+// Simulated raw RGGB frame for testing and demoing the Debayer effect:
+// loaded as single-band float data, like a raw PDS image, with the
+// statistics Input Stretch's clip modes use (already in [0, 1], so scale 1
+// and offset 0).
+export async function drawBayerTest() {
+    const size = 2048;
+    const pixels = makeBayerTestMosaic(size);
+    let sum = 0, sum2 = 0;
+    for (const v of pixels) {
+        sum += v;
+        sum2 += v * v;
+    }
+    const n = pixels.length;
+    const mean = sum / n;
+    const [p02, p98] = approxPercentiles(pixels, 2, 98);
+    loadFloatSource({
+        pixels, width: size, height: size, channels: 1, scale: 1, offset: 0,
+        mean, std: Math.sqrt(Math.max(0, sum2 / n - mean * mean)), p02, p98,
+    });
+    clearRenderCache();
+    resizeAndRedraw();
+    gid("activeFile").innerText = "bayer rggb test pattern";
+    activeFile[0] = "bayer rggb test pattern";
+}
+
 export async function drawPattern(pattern) {
     switch (pattern) {
         case "black":
@@ -187,6 +214,9 @@ export async function drawPattern(pattern) {
         case "blank":
             await drawBlank();
             break;
+        case "bayer rggb":
+            await drawBayerTest();
+            break;
         default:
             throw new Error(`unknown pattern ${pattern}`);
 
@@ -198,7 +228,7 @@ export async function drawPattern(pattern) {
 export function populateTestSelect() {
     const testSelect = gid("test-pattern-select");
     testSelect.appendChild(placeholderOption("-- pattern --"));
-    ["black", "white", "rgb", "gray", "wheel", "spiral", "sinusoid"].forEach(type => {
+    ["black", "white", "rgb", "gray", "wheel", "spiral", "sinusoid", "bayer rggb"].forEach(type => {
         const opt = document.createElement("option");
         opt.value = opt.text = type;
         testSelect.appendChild(opt);
