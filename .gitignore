@@ -8,3 +8,5 @@ scratch*
 __pycache__/*
 test_data/*
 .DS_Store
+.pytest_cache/
+.venv/

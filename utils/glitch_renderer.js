@@ -633,8 +633,14 @@ export class GlitchRenderer {
         this.inputHeight = h;
         this.gl.canvas.width = w;
         this.gl.canvas.height = h;
-        this.loadImage();
-        const tex = this.applyEffects(t);
+        // One output pixel per source pixel: point-sample the source so the
+        // ingested values are exact (linear filtering at texel centers can
+        // still blend in a little of the neighbors on some GPUs).
+        if (!this.sourceTexture) this.buildSourceTexture();
+        const tex = this.withNearestSource(() => {
+            this.loadImage();
+            return this.applyEffects(t);
+        });
         const pixels = this.readFramebufferToPixels(tex, gl.canvas.width, gl.canvas.height);
         [this.inputWidth, this.inputHeight] = [iw, ih];
         this.inputDirty = true;

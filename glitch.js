@@ -32,7 +32,7 @@ import {
     activeFile
 } from "./state.js";
 // import "./tools/debugPane.js";
-import {downloadBlob, formatFloatWidth, gid, vandalStamp} from "./utils/helpers.js";
+import {downloadBlob, formatFloatWidth, formatSignificant, gid, vandalStamp} from "./utils/helpers.js";
 import {renderStackUI} from "./ui_builder.js";
 import {effectRegistry} from "./registry.js";
 import {resolveAnim} from "./utils/animutils.js";
@@ -237,8 +237,7 @@ function renderCoords(e, renderer, output) {
     for (let i = 0; i < renderer.source.channels; i++) {
         const value = renderer.source.data[startIndex + i];
         const unscaled = value * renderer.source.scale + renderer.source.offset;
-        const displayPrecision = 4 + Math.log10(unscaled);
-        values.push(formatFloatWidth(unscaled, displayPrecision));
+        values.push(formatSignificant(unscaled));
     }
     const valText = values.join(", ");
     output.innerText = `${coordText} -- ${valText}`;
@@ -613,6 +612,9 @@ async function appSetup() {
     setupInputStretch();
     renderLoop();
     uiLoop();
+    // Startup is complete (initial pattern loaded, loops running); tests
+    // wait for this before driving the app.
+    document.body.dataset.ready = "1";
 }
 
 
