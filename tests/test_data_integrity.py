@@ -31,13 +31,15 @@ def test_float_single_band_export_is_bit_exact(app):
 
 def _index_coded(h, w):
     """Single band whose value encodes its own index:
-    v = (y*w + x + 0.5)/(w*h). Only valid where the image is drawn
-    unfiltered (e.g. Debayer SUBSAMPLE, which fetches texels directly)."""
+    v = (y*w + x + 0.5)/(w*h). Decode only at pixel centers, where display
+    interpolation returns the pixel's own value."""
     return ((np.arange(h * w).reshape(h, w) + 0.5) / (h * w)).astype(np.float32)
 
 
 def _decode(v, h, w):
-    k = int(np.floor(float(v) * h * w))
+    # Nearest code: tolerant of the slight blending toward a neighbor that
+    # display interpolation adds when the cursor is not exactly centered.
+    k = int(round(float(v) * h * w - 0.5))
     return k % w, k // w
 
 
@@ -63,8 +65,7 @@ def _rendered_at(app, client_x, client_y):
         const px = (arg[0] - rect.left) * cv.width / rect.width;
         const py = (arg[1] - rect.top) * cv.height / rect.height;
         const vr = R.getViewRect();
-        const tex = R.applyEffects(0);
-        const pix = R.readFramebufferToPixels(tex, vr.w, vr.h);
+        const pix = R.readViewPixels(R.applyEffects(0)).pixels;
         const o = (Math.floor(py - vr.y) * vr.w + Math.floor(px - vr.x)) * 4;
         return [pix[o], pix[o + 1], pix[o + 2]];
     """, [client_x, client_y])
@@ -138,15 +139,19 @@ def test_readout_value_precision(app, scale, offset):
 def test_readout_subsample_maps_to_source_pixel(app):
     """With Debayer SUBSAMPLE the image is half size; the readout must name
     the half-size pixel and report the raw value of its CFA source site."""
-    h, w = 48, 64
+    # Small, so each half-size pixel spans many display pixels and a row of
+    # codes is short: the decode then tolerates interpolation blending.
+    h, w = 16, 16
     values = _index_coded(h, w)
     app.load_float(values)
     # RGGB, SUBSAMPLE, BLUE plane: source site (2y + 1, 2x + 1).
     app.add_effect("Debayer", PATTERN=0, METHOD=2, PLANE=1)
-    for fx, fy in [(0.2, 0.3), (0.7, 0.8)]:
-        cx, cy = app.client_point(fx, fy)
+    for px, py in [(1, 2), (6, 0), (3, 7)]:
+        # At a pixel center the displayed value is exactly that pixel's.
+        cx, cy = _client_at_pixel_center(app, px, py)
         x, y, img_w, img_h, (value,) = _parse_readout(app.readout(cx, cy))
         assert (img_w, img_h) == (w // 2, h // 2)
+        assert (x, y) == (px, py)
         assert _decode(_rendered_at(app, cx, cy)[0], h, w) == (2 * x + 1, 2 * y + 1), \
             "drawn pixel is not the blue site of the reported half-size pixel"
         assert value == pytest.approx(float(values[2 * y + 1, 2 * x + 1]), rel=5e-4)

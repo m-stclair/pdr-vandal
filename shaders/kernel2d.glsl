@@ -7,6 +7,8 @@ precision mediump float;
 
 uniform sampler2D u_image;
 uniform vec2 u_resolution;
+// Texture-coordinate step of one image pixel (taps are image pixels apart).
+uniform vec2 u_pixelStep;
 
 uniform float u_kernel[KERNEL_SIZE];
 uniform int u_kernelWidth;
@@ -20,7 +22,7 @@ out vec4 outColor;
 
 void main() {
     vec2 uv = gl_FragCoord.xy / u_resolution;
-    vec2 texel = 1.0 / u_resolution;
+    vec2 texel = u_pixelStep;
 
     vec3 accum = vec3(0.0);
     int k = 0;

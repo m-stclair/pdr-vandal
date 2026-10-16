@@ -84,13 +84,18 @@ const outputFragSrc = `#version 300 es
     precision mediump float;
     
     uniform sampler2D u_image;
-    
+    // View coordinates (top-left origin) -> working-texture coordinates.
+    uniform vec2 u_uvOffset;
+    uniform vec2 u_uvScale;
+    // 1 when drawing to the canvas, whose y axis points up.
+    uniform bool u_flipY;
+
     in vec2 v_uv;
     out vec4 outColor;
-            
+
     void main() {
-        vec2 flippedUV = vec2(v_uv.x, 1.0 - v_uv.y);
-        outColor = texture(u_image, flippedUV);
+        vec2 viewUV = vec2(v_uv.x, u_flipY ? 1.0 - v_uv.y : v_uv.y);
+        outColor = texture(u_image, u_uvOffset + viewUV * u_uvScale);
     }`
 
 const outputVertSrc = `#version 300 es
@@ -143,8 +148,6 @@ export class GlitchRenderer {
         this.frozenViewRegion = null;
         this.floatLinear = !!this.gl.getExtension("OES_texture_float_linear");
         this.renderCache = new Map();
-        this.outputVert = null;
-        this.outputFrag = null;
         this.outputProg = null;
         this.source = null;
         this.defaultFBO = this.gl.createFramebuffer();
@@ -616,10 +619,8 @@ export class GlitchRenderer {
     renderExport(t, fullImage) {
         const gl = this.gl;
         if (!fullImage) {
-            const {w, h} = this.getViewRect();
             this.loadImage();
-            const tex = this.applyEffects(t);
-            return {pixels: this.readFramebufferToPixels(tex, w, h), w, h};
+            return this.readViewPixels(this.applyEffects(t));
         }
         const oldZoom = this.zoom;
         const oldPan = [this.centerX, this.centerY];
@@ -633,14 +634,9 @@ export class GlitchRenderer {
         this.inputHeight = h;
         this.gl.canvas.width = w;
         this.gl.canvas.height = h;
-        // One output pixel per source pixel: point-sample the source so the
-        // ingested values are exact (linear filtering at texel centers can
-        // still blend in a little of the neighbors on some GPUs).
-        if (!this.sourceTexture) this.buildSourceTexture();
-        const tex = this.withNearestSource(() => {
-            this.loadImage();
-            return this.applyEffects(t);
-        });
+        // The working region is now the whole image at native resolution.
+        this.loadImage();
+        const tex = this.applyEffects(t);
         const pixels = this.readFramebufferToPixels(tex, gl.canvas.width, gl.canvas.height);
         [this.inputWidth, this.inputHeight] = [iw, ih];
         this.inputDirty = true;
@@ -660,6 +656,9 @@ export class GlitchRenderer {
         if (JSON.stringify(this.getDebayerConfig()) !== this.lastDebayerKey) {
             this.inputDirty = true;
         }
+        if (this.source && JSON.stringify(this.getWorkingRegion()) !== this.lastRegionKey) {
+            this.inputDirty = true;
+        }
         if (this.inputDirty) {
             if (!this.source) return;
             const success = this.loadImage();
@@ -673,9 +672,8 @@ export class GlitchRenderer {
         const effects = getEffectStack();
         const anySolo = getEffectStack().some(fx => fx.solo);
 
-        const viewRect = this.getViewRect();
-        const width = viewRect.w;
-        const height = viewRect.h;
+        const width = this.inputWidth;
+        const height = this.inputHeight;
         let hashChain = `top`;
         let animationUpdate = false;
         let lastCacheEntry = {
@@ -877,23 +875,15 @@ export class GlitchRenderer {
         return [Math.min(spanX, 1), Math.min(spanY, 1)];
     }
 
-    loadImage(size) {
+    loadImage() {
         if (!this.source) {
             return false;
         }
         this.reset_pipeline();
 
         const gl = this.gl;
-
-        const viewRect = this.getViewRect();
-
-        let w, h;
-        if (!size) {
-            w = viewRect.w;
-            h = viewRect.h;
-        } else {
-            [w, h] = size;
-        }
+        const region = this.getWorkingRegion();
+        const {w, h} = region;
 
         if (!this.sourceTexture) {
             const ok = this.buildSourceTexture();
@@ -936,8 +926,16 @@ export class GlitchRenderer {
             0
         );
 
-        const [spanX, spanY] = this.getViewSpan(w, h);
-        this.drawIngress(ingress, w, h, [this.centerX, this.centerY], [spanX, spanY]);
+        const draw = () => this.drawIngress(
+            ingress, w, h,
+            [(region.u0 + region.u1) / 2, (region.v0 + region.v1) / 2],
+            [region.u1 - region.u0, region.v1 - region.v0],
+        );
+        // On the native grid, point-sample: ingested values are then exact
+        // (linear filtering at texel centers can still blend in a little of
+        // the neighbors on some GPUs).
+        if (region.native) this.withNearestSource(draw);
+        else draw();
 
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.defaultFBO);
@@ -950,6 +948,8 @@ export class GlitchRenderer {
         this.inputTexture = workingTex;
         this.inputWidth = w;
         this.inputHeight = h;
+        this.workingRegion = region;
+        this.lastRegionKey = JSON.stringify(region);
         return true;
     }
 
@@ -1001,7 +1001,11 @@ export class GlitchRenderer {
     // Source uv rect on screen, clamped to the image. Held at its pre-export
     // value while an export moves the view.
     getViewRegion() {
-        if (this.frozenViewRegion) return this.frozenViewRegion;
+        return this.frozenViewRegion ?? this.visibleRegion();
+    }
+
+    // Source uv rect on screen now, clamped to the image.
+    visibleRegion() {
         const {w, h} = this.getViewRect();
         const [spanX, spanY] = this.getViewSpan(w, h);
         return {
@@ -1152,43 +1156,52 @@ export class GlitchRenderer {
         return true;
     }
 
-    writeToCanvas(tex) {
+    // Draw the visible part of a working-resolution texture into the bound
+    // framebuffer's current viewport.
+    drawView(tex, flipY) {
         const gl = this.gl;
-        if (this.outputVert === null) {
-            this.outputVert = gl.createShader(gl.VERTEX_SHADER);
-            gl.shaderSource(this.outputVert, outputVertSrc)
-            gl.compileShader(this.outputVert);
-            if (!gl.getShaderParameter(this.outputVert, gl.COMPILE_STATUS)) {
-                throw new Error(gl.getShaderInfoLog(this.outputVert));
-            }
-        }
-        if (this.outputFrag === null) {
-            this.outputFrag = gl.createShader(gl.FRAGMENT_SHADER);
-            gl.shaderSource(this.outputFrag, outputFragSrc)
-            gl.compileShader(this.outputFrag);
-            if (!gl.getShaderParameter(this.outputFrag, gl.COMPILE_STATUS)) {
-                throw new Error(gl.getShaderInfoLog(this.outputFrag));
-            }
-        }
         if (this.outputProg === null) {
-            this.outputProg = gl.createProgram();
-            gl.attachShader(this.outputProg, this.outputVert);
-            gl.attachShader(this.outputProg, this.outputFrag);
-            gl.linkProgram(this.outputProg);
-            if (!gl.getProgramParameter(this.outputProg, gl.LINK_STATUS)) {
-                const info = gl.getProgramInfoLog(this.outputProg);
-                throw new Error(`Could not compile WebGL program. \n\n${info}`);
-            }
+            this.outputProg = this.compileProgram(outputVertSrc, outputFragSrc);
         }
+        const r = this.workingRegion;
+        const vis = this.visibleRegion();
+        const rw = r.u1 - r.u0, rh = r.v1 - r.v0;
         gl.useProgram(this.outputProg);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        const viewRect = this.getViewRect();
-        gl.viewport(viewRect.x, viewRect.y, viewRect.w, viewRect.h);
         gl.bindVertexArray(this.vao);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, tex);
-        gl.uniform1i(gl.getUniformLocation(this.outputProg, 'u_image'), 0);
+        const filter = this.floatLinear ? gl.LINEAR : gl.NEAREST;
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+        const loc = name => gl.getUniformLocation(this.outputProg, name);
+        gl.uniform1i(loc('u_image'), 0);
+        gl.uniform2f(loc('u_uvOffset'), (vis.u0 - r.u0) / rw, (vis.v0 - r.v0) / rh);
+        gl.uniform2f(loc('u_uvScale'), (vis.u1 - vis.u0) / rw, (vis.v1 - vis.v0) / rh);
+        gl.uniform1i(loc('u_flipY'), flipY ? 1 : 0);
         gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
+
+    writeToCanvas(tex) {
+        const gl = this.gl;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        const viewRect = this.getViewRect();
+        gl.viewport(viewRect.x, viewRect.y, viewRect.w, viewRect.h);
+        this.drawView(tex, true);
+    }
+
+    // What the canvas shows, at view resolution: float RGBA, row 0 at the
+    // top of the view.
+    readViewPixels(tex) {
+        const {w, h} = this.getViewRect();
+        const target = this.makeF32Target(w, h);
+        try {
+            this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, target.fbo);
+            this.gl.viewport(0, 0, w, h);
+            this.drawView(tex, false);
+            return {pixels: this.readF32Target(target, w, h), w, h};
+        } finally {
+            this.deleteF32Target(target);
+        }
     }
 
     clampCenter() {
@@ -1200,6 +1213,60 @@ export class GlitchRenderer {
 
         this.centerX = clamp(this.centerX, halfW, 1.0 - halfW);
         this.centerY = clamp(this.centerY, halfH, 1.0 - halfH);
+    }
+
+    // Texture-coordinate step of one image pixel in an effect pass over the
+    // current view: neighborhood effects step by this so their kernels are
+    // sized in image pixels at any zoom, matching a full-image export, where
+    // it is exactly one texel. (Unregistered neighborhood effects should use
+    // it too if re-enabled.)
+    imagePixelStep() {
+        const [imageW, imageH] = this.getImageSize();
+        const r = this.workingRegion;
+        return [1 / ((r.u1 - r.u0) * imageW), 1 / ((r.v1 - r.v0) * imageH)];
+    }
+
+    // How far beyond the visible region, in image pixels, the enabled
+    // effects read: the sum of their neighborhoods, since stacked kernels
+    // reach that far together.
+    getStackMargin() {
+        const stack = getEffectStack();
+        const anySolo = stack.some(fx => fx.solo);
+        let margin = 0;
+        for (const fx of stack) {
+            if (!fx.neighborhood || fx.disabled || (anySolo && !fx.solo)) continue;
+            margin += Math.max(0, Math.ceil(Number(fx.neighborhood(fx.config)) || 0));
+        }
+        return margin;
+    }
+
+    // The grid effects run on: the visible region plus the stack's margin,
+    // clamped to the image, so kernels see real image data at the view edges
+    // and clamp at the image edges just as in a full-image export. Zoomed in
+    // (an image pixel covers at least one display pixel) it is the native
+    // image pixels, aligned and exact; zoomed out it is display resolution.
+    // Returns the region in source uv, its size in texels, and whether it
+    // is native.
+    getWorkingRegion() {
+        const [W, H] = this.getImageSize();
+        const view = this.getViewRect();
+        const [spanX, spanY] = this.getViewSpan(view.w, view.h);
+        const vis = this.visibleRegion();
+        const margin = this.getStackMargin();
+        if (view.w / (spanX * W) >= 1) {
+            const x0 = Math.max(0, Math.floor(vis.u0 * W) - margin);
+            const x1 = Math.min(W, Math.ceil(vis.u1 * W) + margin);
+            const y0 = Math.max(0, Math.floor(vis.v0 * H) - margin);
+            const y1 = Math.min(H, Math.ceil(vis.v1 * H) + margin);
+            return {u0: x0 / W, u1: x1 / W, v0: y0 / H, v1: y1 / H,
+                    w: x1 - x0, h: y1 - y0, native: true};
+        }
+        const u0 = Math.max(0, vis.u0 - margin / W), u1 = Math.min(1, vis.u1 + margin / W);
+        const v0 = Math.max(0, vis.v0 - margin / H), v1 = Math.min(1, vis.v1 + margin / H);
+        return {u0, u1, v0, v1,
+                w: Math.max(1, Math.round(view.w * (u1 - u0) / spanX)),
+                h: Math.max(1, Math.round(view.h * (v1 - v0) / spanY)),
+                native: false};
     }
 
     // Source uv (0-1, top-left origin) under a client-space point, unclamped,

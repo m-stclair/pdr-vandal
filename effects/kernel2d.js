@@ -67,6 +67,7 @@ export default {
         instance.auxiliaryCache.lastKernelSettings = kernelSettings;
         const uniformSpec = {
         u_resolution: {type: "vec2", value: [width, height]},
+        u_pixelStep: {type: "vec2", value: instance.glState.renderer.imagePixelStep()},
         u_kernel: {type: "floatArray", value: kernelInfo.kernel},
         u_kernelWidth: {type: "int", value: kernelInfo.width},
         u_kernelHeight: {type: "int", value: kernelInfo.height},
@@ -91,13 +92,16 @@ export default {
         instance.glState.renderer.deleteEffectFBO(instance.id);
     },
     glState: null,
-    isGPU: true
+    isGPU: true,
+    // How far, in image pixels, this effect reads beyond each output pixel.
+    neighborhood: (config) => Math.max(Number(config.kernelRadiusX), Number(config.kernelRadiusY)),
 };
 
 export const effectMeta = {
     group: "Utility",
     tags: ["kernel", "blur", "sharpen", "emboss", "webgl", "filter", "convolution"],
-    description: "Applies a generic 2D convolution kernel; use for blur, emboss, sharpening, etc.",
+    description: "Applies a generic 2D convolution kernel; use for blur, emboss, sharpening, etc. " +
+        "Radii are in image pixels, so the preview matches full-resolution exports at any zoom.",
     canAnimate: true,
     realtimeSafe: true,
     parameterHints: {
