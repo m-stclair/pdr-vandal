@@ -293,10 +293,12 @@ export function resizeAndRedraw() {
     Lock.image = true;
     try {
         const leftPane = document.getElementById('leftPane');
-        const width = leftPane.clientWidth - 20;
-        const height = window.innerHeight * 0.9;
-        canvas.width = width;
-        canvas.height = height;
+        // Fill the pane exactly. Setting a canvas dimension clears its
+        // buffer, so only assign when the size actually changed.
+        const w = Math.max(1, leftPane.clientWidth);
+        const h = Math.max(1, leftPane.clientHeight);
+        if (canvas.width !== w) canvas.width = w;
+        if (canvas.height !== h) canvas.height = h;
         appRenderer.inputDirty = true;
         requestRender();
     } finally {
