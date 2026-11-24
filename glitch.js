@@ -365,11 +365,15 @@ async function handlePdrUpload(files) {
 
         pdrProductInfo.files = files.map((f) => f.name);
         lockRender();
-        await populatePdrUI();
-        await handlePdrObjectChange();
-        requestUIDraw();
-        requestRender();
-        unlockRender();
+        try {
+            await populatePdrUI();
+            await handlePdrObjectChange();
+            requestUIDraw();
+            requestRender();
+        } finally {
+            // the renderer lock isn't reference-counted; always release it
+            unlockRender();
+        }
         unlockApp();
     } catch (err) {
         console.error(err);
