@@ -56,8 +56,6 @@ export function moveEffectInStack(effectStack, from, to) {
 
 
 // top-level buttons
-const uploadButton = gid('upload');
-const uploadPDRButton = gid('pdr-upload');
 // const saveBtn = gid("save-stack");
 // const loadBtn = gid("load-stack");
 const clearBtn = gid("clear-stack");
@@ -65,19 +63,8 @@ const clearBtn = gid("clear-stack");
 
 
 export function setupStaticButtons(
-    handleUpload, handlePdrUpload, resetStack, requestRender, requestUIDraw,
-    setFreezeAnimationButtonFlag
+    resetStack, requestRender, requestUIDraw, setFreezeAnimationButtonFlag
 ) {
-    uploadButton.addEventListener(
-        'change', (e) => {
-            handleUpload(e);
-            uploadButton.value = "";
-        });
-    uploadPDRButton.addEventListener(
-        'change', async (e) => {
-            await handlePdrUpload(e);
-            uploadPDRButton.value = "";
-        });
     clearBtn.addEventListener("click", () => {
         resetStack();
         requestUIDraw();
@@ -234,13 +221,3 @@ export function setupAboutModal(lockApp, unlockApp) {
 //         }
 //     });
 // }
-
-export function setupDragAndDrop(handleUpload) {
-    document.addEventListener('dragover', e => e.preventDefault());
-    document.addEventListener('drop', e => {
-        e.preventDefault();
-        const files = Array.from(e.dataTransfer.files)
-            .filter(f => f.type.startsWith('image/'));
-        handleUpload(files[0]);
-    });
-}

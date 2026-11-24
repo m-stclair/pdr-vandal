@@ -40,6 +40,7 @@ import {resolveAnim} from "./utils/animutils.js";
 // noinspection ES6UnusedImports
 import {EffectPicker} from './components/effectpicker.js'
 import {HistogramPanel} from './components/histogram.js'
+import {setupOpenFileModal} from './components/openfile.js'
 import {pdrInitializedFlag, initPDR, getPyodide, getProductInfo, getArrayImage, flushPdrCache} from "./pdr.js";
 import {drawPattern} from "./test_patterns.js";
 import {getAppPresetView} from "./utils/presets.js";
@@ -272,9 +273,10 @@ function showPDRErrorModal(e) {
     pdrErrorModal.style.display = "block";
 }
 
-async function handlePdrUpload(e) {
-    // TODO: this needs to be plural to permit uploading detached labels
-    const firstFile = e.target.files[0];
+// files: File[]; the first one is the primary file pdr reads (usually the
+// label, see components/openfile.js)
+async function handlePdrUpload(files) {
+    const firstFile = files[0];
     if (!firstFile) return;
     lockApp();
     pdrLoadingModal.style.display = "block";
@@ -287,18 +289,18 @@ async function handlePdrUpload(e) {
         await initPDR();
         pdrLoadingModalContent.innerText = `loading ${firstFile.name}...`
         await delayNextPaint();
-        for (const f of e.target.files) {
+        for (const f of files) {
             pyodide.FS.writeFile(f.name, new Uint8Array(await f.arrayBuffer()));
         }
-        // TODO: pdr will usually handle figuring out whether this is a detached label
+        // pdr will usually handle figuring out whether this is a detached label
         //  or a data file, but it can become problematic if there are files
         //  in the product that don't share filename stems with a detached label
-        //  and one of those is, unfortunately, the first one -- we may need some
-        //  little heuristic. e.g., this could happen for M3 products.
+        //  and one of those is first (e.g. M3 products). The open dialog puts a
+        //  lone .xml/.lbl label first and asks the user when that's ambiguous.
         const objects = await getProductInfo(firstFile.name);
         if (Object.keys(objects).length === 0) {
             showPDRErrorModal("no arrays found in file");
-            for (const f of e.target.files) {
+            for (const f of files) {
                 pyodide.FS.unlink(f.name);
             }
             return;
@@ -308,7 +310,7 @@ async function handlePdrUpload(e) {
 
         // do not immediately delete reuploads!
         const currentFilenames = [];
-        for (const f of e.target.files) {
+        for (const f of files) {
             currentFilenames.push(f.name);
         }
         if (pdrProductInfo.files) {
@@ -318,7 +320,7 @@ async function handlePdrUpload(e) {
             }
         }
 
-        pdrProductInfo.files = [...e.target.files].map((f) => f.name);
+        pdrProductInfo.files = files.map((f) => f.name);
         lockRender();
         await populatePdrUI();
         await handlePdrObjectChange();
@@ -326,13 +328,20 @@ async function handlePdrUpload(e) {
         requestRender();
         unlockRender();
         unlockApp();
-    } catch (e) {
-        console.error(e);
+    } catch (err) {
+        console.error(err);
         pdrLoadingModal.style.display = "none";
-        showPDRErrorModal(e);
-        if (pyodide && e.target) {
-            for (const f of e.target.files) {
-                pyodide.FS.unlink(f.name);
+        showPDRErrorModal(err);
+        if (pyodide) {
+            // keep files the currently displayed product still uses
+            const inUse = pdrProductInfo.files ?? [];
+            for (const f of files) {
+                if (inUse.includes(f.name)) continue;
+                try {
+                    pyodide.FS.unlink(f.name);
+                } catch {
+                    // never written (failed before or during writing)
+                }
             }
         }
     } finally {
@@ -599,8 +608,6 @@ async function appSetup() {
         toggleBar.classList.toggle('collapsed');
     });
     setupStaticButtons(
-        handleHTMLUpload,
-        handlePdrUpload,
         resetStack,
         requestRender,
         requestUIDraw,
@@ -611,6 +618,9 @@ async function appSetup() {
     setupPaneDrag();
     setupPDRErrorModal(unlockApp);
     setupHelpModal(lockApp, unlockApp);
+    setupOpenFileModal({
+        handleUpload: handleHTMLUpload, handlePdrUpload, lockApp, unlockApp
+    });
     setupAboutModal(lockApp, unlockApp);
     setupWindow(resizeAndRedraw);
     await drawPattern('spiral');
