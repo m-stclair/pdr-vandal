@@ -40,14 +40,18 @@ function formatSize(bytes) {
 }
 
 // Files from a drop, minus directories (which must be checked while the
-// drop event is being dispatched).
+// drop event is being dispatched). Each file is taken from its own item:
+// dataTransfer.files skips non-file items, so its indexes need not match.
 function filesFromDrop(dataTransfer) {
+    if (!dataTransfer.items) return {files: Array.from(dataTransfer.files), skipped: []};
     const files = [], skipped = [];
-    const items = Array.from(dataTransfer.items ?? []);
-    Array.from(dataTransfer.files).forEach((f, i) => {
-        if (items[i]?.webkitGetAsEntry?.()?.isDirectory) skipped.push(f.name);
+    for (const item of Array.from(dataTransfer.items)) {
+        if (item.kind !== "file") continue;
+        const f = item.getAsFile();
+        if (!f) continue;
+        if (item.webkitGetAsEntry?.()?.isDirectory) skipped.push(f.name);
         else files.push(f);
-    });
+    }
     return {files, skipped};
 }
 
@@ -282,9 +286,10 @@ export function setupOpenFileModal({handleUpload, handlePdrUpload, lockApp, unlo
         e.preventDefault();
         windowDepth = 0;
         document.body.classList.remove("drag-target");
-        // drops inside the dialog are handled above; ignore the rest while
-        // any modal is open or a product is loading
-        if (!acceptsWindowDrop()) return;
+        // drops inside the dialog are handled above (which may already have
+        // closed it); ignore the rest while any modal is open or a product
+        // is loading
+        if (content.contains(e.target) || !acceptsWindowDrop()) return;
         const {files, skipped} = filesFromDrop(e.dataTransfer);
         if (files.length === 0) return;
         if (routeWindowDrop(files.map((f) => f.name)) === "browser") handleUpload(files[0]);

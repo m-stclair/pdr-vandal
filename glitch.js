@@ -96,8 +96,9 @@ async function resetPdr() {
     gid("pdrUI").style.display = "none"
 }
 
+// returns true if the selected band was loaded and displayed
 async function handlePdrBandSelect() {
-    if (!pdrProductInfo.name) return;
+    if (!pdrProductInfo.name) return false;
     const requestId = ++currentImageRequest;
 
     try {
@@ -108,7 +109,7 @@ async function handlePdrBandSelect() {
 
         if (requestId !== currentImageRequest) {
             console.warn("Debounced PDR band select request");
-            return;
+            return false;
         }
 
         loadFloatSource(arrayData);
@@ -116,27 +117,15 @@ async function handlePdrBandSelect() {
         activeFile[0] = pdrProductInfo.name;
         resizeAndRedraw();
         requestUIDraw();
+        return true;
     } catch (err) {
         showPDRErrorModal(err);
+        return false;
     }
 }
 
 
-async function handlePdrObjectChange() {
-    if (!pdrProductInfo) return;
-    const objname = dataObjectSelect.value
-    if (!pdrProductInfo) return;
-    const objInfo = pdrProductInfo['objects'][objname];
-    if (objInfo === undefined) {
-        throw new Error(`${objname} not in product`)
-    }
-    const maxDimension = appRenderer.gl.getParameter(appRenderer.gl.MAX_TEXTURE_SIZE);
-    if (objInfo.width > maxDimension || objInfo.height > maxDimension) {
-        showPDRErrorModal(
-            `Array too large for this browser (max dimension is ${maxDimension}).`
-        )
-        return;
-    }
+function populateBandOptions(objInfo) {
     imageBandSelect.options.length = 0;
     if (objInfo['bands'] === 3 || objInfo['bands'] === 4) {
         const opt = document.createElement('option')
@@ -151,7 +140,25 @@ async function handlePdrObjectChange() {
         imageBandSelect.options.add(opt);
     }
     imageBandSelect.options[0].selected = true;
-    await handlePdrBandSelect();
+}
+
+// returns true if the selected object's first band was loaded and displayed
+async function handlePdrObjectChange() {
+    if (!pdrProductInfo.name) return false;
+    const objname = dataObjectSelect.value
+    const objInfo = pdrProductInfo['objects'][objname];
+    if (objInfo === undefined) {
+        throw new Error(`${objname} not in product`)
+    }
+    const maxDimension = appRenderer.gl.getParameter(appRenderer.gl.MAX_TEXTURE_SIZE);
+    if (objInfo.width > maxDimension || objInfo.height > maxDimension) {
+        showPDRErrorModal(
+            `Array too large for this browser (max dimension is ${maxDimension}).`
+        )
+        return false;
+    }
+    populateBandOptions(objInfo);
+    return await handlePdrBandSelect();
 }
 
 dataObjectSelect.addEventListener('change', async () => {
@@ -322,9 +329,36 @@ async function handlePdrUpload(files) {
     }
     let pyodide = null;
     const backups = new Map();
-    // set once the upload has replaced the displayed product; past that point
-    // there is nothing to roll back to
+    // the displayed product, restored if this upload fails before committing
+    const prev = pdrProductInfo;
+    const prevObject = dataObjectSelect.value;
+    const prevBand = imageBandSelect.value;
+    // set once pdrProductInfo and the PDR UI point at the new product
+    let switched = false;
+    // set once the new product is fully displayed; past that point there is
+    // nothing to roll back to
     let committed = false;
+
+    async function restorePrevious() {
+        if (switched) {
+            pdrProductInfo = prev;
+            if (prev.name) {
+                await populatePdrUI();
+                dataObjectSelect.value = prevObject;
+                const objInfo = prev.objects?.[prevObject];
+                if (objInfo) {
+                    populateBandOptions(objInfo);
+                    imageBandSelect.value = prevBand;
+                }
+            } else {
+                gid("pdrUI").style.display = "none";
+            }
+        }
+        if (pyodide && backups.size > 0) {
+            await rollbackPdrFiles(pyodide, backups);
+        }
+    }
+
     try {
         pyodide = await getPyodide();
         await initPDR();
@@ -344,47 +378,52 @@ async function handlePdrUpload(files) {
         const objects = await getProductInfo(firstFile.name);
         if (Object.keys(objects).length === 0) {
             showPDRErrorModal("no arrays found in file");
-            await rollbackPdrFiles(pyodide, backups);
+            await restorePrevious();
             return;
         }
-        committed = true;
-        pdrProductInfo.name = firstFile.name;
-        pdrProductInfo.objects = objects;
-
-        // do not immediately delete reuploads!
-        const currentFilenames = [];
-        for (const f of files) {
-            currentFilenames.push(f.name);
-        }
-        if (pdrProductInfo.files) {
-            for (const f of pdrProductInfo.files) {
-                if (currentFilenames.includes(f)) continue;
-                pyodide.FS.unlink(f);
-            }
-        }
-
-        pdrProductInfo.files = files.map((f) => f.name);
+        pdrProductInfo = {
+            name: firstFile.name,
+            objects,
+            files: files.map((f) => f.name),
+        };
+        switched = true;
+        let displayed = false;
         lockRender();
         try {
             await populatePdrUI();
-            await handlePdrObjectChange();
+            displayed = await handlePdrObjectChange();
             requestUIDraw();
             requestRender();
         } finally {
             // the renderer lock isn't reference-counted; always release it
             unlockRender();
         }
+        if (!displayed) {
+            // the failing step has already shown its error
+            await restorePrevious();
+            return;
+        }
+        committed = true;
+
+        // remove the old product's files, except ones this upload reused
+        for (const f of prev.files ?? []) {
+            if (pdrProductInfo.files.includes(f)) continue;
+            try {
+                pyodide.FS.unlink(f);
+            } catch {
+                // already gone
+            }
+        }
         unlockApp();
     } catch (err) {
         console.error(err);
         pdrLoadingModal.style.display = "none";
         showPDRErrorModal(err);
-        if (pyodide && !committed && backups.size > 0) {
-            // put back any files the displayed product still uses
+        if (!committed) {
             try {
-                await rollbackPdrFiles(pyodide, backups);
-            } catch (rollbackErr) {
-                console.error("rollback failed:", rollbackErr);
+                await restorePrevious();
+            } catch (restoreErr) {
+                console.error("restoring previous product failed:", restoreErr);
             }
         }
     } finally {
