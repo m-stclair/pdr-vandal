@@ -273,6 +273,43 @@ function showPDRErrorModal(e) {
     pdrErrorModal.style.display = "block";
 }
 
+// Write uploaded files into the Pyodide FS, first saving the bytes of any
+// same-named file they replace (e.g. one the displayed product still uses).
+// Fills backups with name -> previous bytes, or null if the name was new. Each
+// name is recorded before it is written, so a failure partway through can
+// still be rolled back.
+async function stagePdrFiles(pyodide, files, backups) {
+    for (const f of files) {
+        if (!backups.has(f.name)) {
+            backups.set(
+                f.name,
+                pyodide.FS.analyzePath(f.name).exists
+                    ? pyodide.FS.readFile(f.name)
+                    : null
+            );
+        }
+        pyodide.FS.writeFile(f.name, new Uint8Array(await f.arrayBuffer()));
+    }
+}
+
+// Undo stagePdrFiles: restore replaced files and remove new ones. Then flush
+// pdr's caches, which may hold products parsed from the failed upload's bytes
+// under reused names; the displayed product reloads from disk on its next read.
+async function rollbackPdrFiles(pyodide, backups) {
+    for (const [name, bytes] of backups) {
+        if (bytes) {
+            pyodide.FS.writeFile(name, bytes);
+        } else {
+            try {
+                pyodide.FS.unlink(name);
+            } catch {
+                // never written (failed before or during writing)
+            }
+        }
+    }
+    await flushPdrCache();
+}
+
 // files: File[]; the first one is the primary file pdr reads (usually the
 // label, see components/openfile.js)
 async function handlePdrUpload(files) {
@@ -284,13 +321,20 @@ async function handlePdrUpload(files) {
         pdrLoadingModalContent.innerText = "Setting up PDR (wait ~20 seconds)..."
     }
     let pyodide = null;
+    const backups = new Map();
+    // set once the upload has replaced the displayed product; past that point
+    // there is nothing to roll back to
+    let committed = false;
     try {
         pyodide = await getPyodide();
         await initPDR();
         pdrLoadingModalContent.innerText = `loading ${firstFile.name}...`
         await delayNextPaint();
-        for (const f of files) {
-            pyodide.FS.writeFile(f.name, new Uint8Array(await f.arrayBuffer()));
+        await stagePdrFiles(pyodide, files, backups);
+        // pdr caches products by path, so if we replaced any existing file,
+        // drop the cache so the new bytes actually get parsed
+        if ([...backups.values()].some((b) => b !== null)) {
+            await flushPdrCache();
         }
         // pdr will usually handle figuring out whether this is a detached label
         //  or a data file, but it can become problematic if there are files
@@ -300,11 +344,10 @@ async function handlePdrUpload(files) {
         const objects = await getProductInfo(firstFile.name);
         if (Object.keys(objects).length === 0) {
             showPDRErrorModal("no arrays found in file");
-            for (const f of files) {
-                pyodide.FS.unlink(f.name);
-            }
+            await rollbackPdrFiles(pyodide, backups);
             return;
         }
+        committed = true;
         pdrProductInfo.name = firstFile.name;
         pdrProductInfo.objects = objects;
 
@@ -332,16 +375,12 @@ async function handlePdrUpload(files) {
         console.error(err);
         pdrLoadingModal.style.display = "none";
         showPDRErrorModal(err);
-        if (pyodide) {
-            // keep files the currently displayed product still uses
-            const inUse = pdrProductInfo.files ?? [];
-            for (const f of files) {
-                if (inUse.includes(f.name)) continue;
-                try {
-                    pyodide.FS.unlink(f.name);
-                } catch {
-                    // never written (failed before or during writing)
-                }
+        if (pyodide && !committed && backups.size > 0) {
+            // put back any files the displayed product still uses
+            try {
+                await rollbackPdrFiles(pyodide, backups);
+            } catch (rollbackErr) {
+                console.error("rollback failed:", rollbackErr);
             }
         }
     } finally {
