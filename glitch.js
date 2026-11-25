@@ -40,6 +40,7 @@ import {resolveAnim} from "./utils/animutils.js";
 // noinspection ES6UnusedImports
 import {EffectPicker} from './components/effectpicker.js'
 import {HistogramPanel} from './components/histogram.js'
+import {setupOpenFileModal} from './components/openfile.js'
 import {pdrInitializedFlag, initPDR, getPyodide, getProductInfo, getArrayImage, flushPdrCache} from "./pdr.js";
 import {drawPattern} from "./test_patterns.js";
 import {getAppPresetView} from "./utils/presets.js";
@@ -95,8 +96,9 @@ async function resetPdr() {
     gid("pdrUI").style.display = "none"
 }
 
+// returns true if the selected band was loaded and displayed
 async function handlePdrBandSelect() {
-    if (!pdrProductInfo.name) return;
+    if (!pdrProductInfo.name) return false;
     const requestId = ++currentImageRequest;
 
     try {
@@ -107,7 +109,7 @@ async function handlePdrBandSelect() {
 
         if (requestId !== currentImageRequest) {
             console.warn("Debounced PDR band select request");
-            return;
+            return false;
         }
 
         loadFloatSource(arrayData);
@@ -115,27 +117,15 @@ async function handlePdrBandSelect() {
         activeFile[0] = pdrProductInfo.name;
         resizeAndRedraw();
         requestUIDraw();
+        return true;
     } catch (err) {
         showPDRErrorModal(err);
+        return false;
     }
 }
 
 
-async function handlePdrObjectChange() {
-    if (!pdrProductInfo) return;
-    const objname = dataObjectSelect.value
-    if (!pdrProductInfo) return;
-    const objInfo = pdrProductInfo['objects'][objname];
-    if (objInfo === undefined) {
-        throw new Error(`${objname} not in product`)
-    }
-    const maxDimension = appRenderer.gl.getParameter(appRenderer.gl.MAX_TEXTURE_SIZE);
-    if (objInfo.width > maxDimension || objInfo.height > maxDimension) {
-        showPDRErrorModal(
-            `Array too large for this browser (max dimension is ${maxDimension}).`
-        )
-        return;
-    }
+function populateBandOptions(objInfo) {
     imageBandSelect.options.length = 0;
     if (objInfo['bands'] === 3 || objInfo['bands'] === 4) {
         const opt = document.createElement('option')
@@ -150,7 +140,25 @@ async function handlePdrObjectChange() {
         imageBandSelect.options.add(opt);
     }
     imageBandSelect.options[0].selected = true;
-    await handlePdrBandSelect();
+}
+
+// returns true if the selected object's first band was loaded and displayed
+async function handlePdrObjectChange() {
+    if (!pdrProductInfo.name) return false;
+    const objname = dataObjectSelect.value
+    const objInfo = pdrProductInfo['objects'][objname];
+    if (objInfo === undefined) {
+        throw new Error(`${objname} not in product`)
+    }
+    const maxDimension = appRenderer.gl.getParameter(appRenderer.gl.MAX_TEXTURE_SIZE);
+    if (objInfo.width > maxDimension || objInfo.height > maxDimension) {
+        showPDRErrorModal(
+            `Array too large for this browser (max dimension is ${maxDimension}).`
+        )
+        return false;
+    }
+    populateBandOptions(objInfo);
+    return await handlePdrBandSelect();
 }
 
 dataObjectSelect.addEventListener('change', async () => {
@@ -272,9 +280,47 @@ function showPDRErrorModal(e) {
     pdrErrorModal.style.display = "block";
 }
 
-async function handlePdrUpload(e) {
-    // TODO: this needs to be plural to permit uploading detached labels
-    const firstFile = e.target.files[0];
+// Write uploaded files into the Pyodide FS, first saving the bytes of any
+// same-named file they replace (e.g. one the displayed product still uses).
+// Fills backups with name -> previous bytes, or null if the name was new. Each
+// name is recorded before it is written, so a failure partway through can
+// still be rolled back.
+async function stagePdrFiles(pyodide, files, backups) {
+    for (const f of files) {
+        if (!backups.has(f.name)) {
+            backups.set(
+                f.name,
+                pyodide.FS.analyzePath(f.name).exists
+                    ? pyodide.FS.readFile(f.name)
+                    : null
+            );
+        }
+        pyodide.FS.writeFile(f.name, new Uint8Array(await f.arrayBuffer()));
+    }
+}
+
+// Undo stagePdrFiles: restore replaced files and remove new ones. Then flush
+// pdr's caches, which may hold products parsed from the failed upload's bytes
+// under reused names; the displayed product reloads from disk on its next read.
+async function rollbackPdrFiles(pyodide, backups) {
+    for (const [name, bytes] of backups) {
+        if (bytes) {
+            pyodide.FS.writeFile(name, bytes);
+        } else {
+            try {
+                pyodide.FS.unlink(name);
+            } catch {
+                // never written (failed before or during writing)
+            }
+        }
+    }
+    await flushPdrCache();
+}
+
+// files: File[]; the first one is the primary file pdr reads (usually the
+// label, see components/openfile.js)
+async function handlePdrUpload(files) {
+    const firstFile = files[0];
     if (!firstFile) return;
     lockApp();
     pdrLoadingModal.style.display = "block";
@@ -282,57 +328,102 @@ async function handlePdrUpload(e) {
         pdrLoadingModalContent.innerText = "Setting up PDR (wait ~20 seconds)..."
     }
     let pyodide = null;
+    const backups = new Map();
+    // the displayed product, restored if this upload fails before committing
+    const prev = pdrProductInfo;
+    const prevObject = dataObjectSelect.value;
+    const prevBand = imageBandSelect.value;
+    // set once pdrProductInfo and the PDR UI point at the new product
+    let switched = false;
+    // set once the new product is fully displayed; past that point there is
+    // nothing to roll back to
+    let committed = false;
+
+    async function restorePrevious() {
+        if (switched) {
+            pdrProductInfo = prev;
+            if (prev.name) {
+                await populatePdrUI();
+                dataObjectSelect.value = prevObject;
+                const objInfo = prev.objects?.[prevObject];
+                if (objInfo) {
+                    populateBandOptions(objInfo);
+                    imageBandSelect.value = prevBand;
+                }
+            } else {
+                gid("pdrUI").style.display = "none";
+            }
+        }
+        if (pyodide && backups.size > 0) {
+            await rollbackPdrFiles(pyodide, backups);
+        }
+    }
+
     try {
         pyodide = await getPyodide();
         await initPDR();
         pdrLoadingModalContent.innerText = `loading ${firstFile.name}...`
         await delayNextPaint();
-        for (const f of e.target.files) {
-            pyodide.FS.writeFile(f.name, new Uint8Array(await f.arrayBuffer()));
+        await stagePdrFiles(pyodide, files, backups);
+        // pdr caches products by path, so if we replaced any existing file,
+        // drop the cache so the new bytes actually get parsed
+        if ([...backups.values()].some((b) => b !== null)) {
+            await flushPdrCache();
         }
-        // TODO: pdr will usually handle figuring out whether this is a detached label
+        // pdr will usually handle figuring out whether this is a detached label
         //  or a data file, but it can become problematic if there are files
         //  in the product that don't share filename stems with a detached label
-        //  and one of those is, unfortunately, the first one -- we may need some
-        //  little heuristic. e.g., this could happen for M3 products.
+        //  and one of those is first (e.g. M3 products). The open dialog puts a
+        //  lone .xml/.lbl label first and asks the user when that's ambiguous.
         const objects = await getProductInfo(firstFile.name);
         if (Object.keys(objects).length === 0) {
             showPDRErrorModal("no arrays found in file");
-            for (const f of e.target.files) {
-                pyodide.FS.unlink(f.name);
-            }
+            await restorePrevious();
             return;
         }
-        pdrProductInfo.name = firstFile.name;
-        pdrProductInfo.objects = objects;
-
-        // do not immediately delete reuploads!
-        const currentFilenames = [];
-        for (const f of e.target.files) {
-            currentFilenames.push(f.name);
+        pdrProductInfo = {
+            name: firstFile.name,
+            objects,
+            files: files.map((f) => f.name),
+        };
+        switched = true;
+        let displayed = false;
+        lockRender();
+        try {
+            await populatePdrUI();
+            displayed = await handlePdrObjectChange();
+            requestUIDraw();
+            requestRender();
+        } finally {
+            // the renderer lock isn't reference-counted; always release it
+            unlockRender();
         }
-        if (pdrProductInfo.files) {
-            for (const f of pdrProductInfo.files) {
-                if (currentFilenames.includes(f)) continue;
+        if (!displayed) {
+            // the failing step has already shown its error
+            await restorePrevious();
+            return;
+        }
+        committed = true;
+
+        // remove the old product's files, except ones this upload reused
+        for (const f of prev.files ?? []) {
+            if (pdrProductInfo.files.includes(f)) continue;
+            try {
                 pyodide.FS.unlink(f);
+            } catch {
+                // already gone
             }
         }
-
-        pdrProductInfo.files = [...e.target.files].map((f) => f.name);
-        lockRender();
-        await populatePdrUI();
-        await handlePdrObjectChange();
-        requestUIDraw();
-        requestRender();
-        unlockRender();
         unlockApp();
-    } catch (e) {
-        console.error(e);
+    } catch (err) {
+        console.error(err);
         pdrLoadingModal.style.display = "none";
-        showPDRErrorModal(e);
-        if (pyodide && e.target) {
-            for (const f of e.target.files) {
-                pyodide.FS.unlink(f.name);
+        showPDRErrorModal(err);
+        if (!committed) {
+            try {
+                await restorePrevious();
+            } catch (restoreErr) {
+                console.error("restoring previous product failed:", restoreErr);
             }
         }
     } finally {
@@ -599,8 +690,6 @@ async function appSetup() {
         toggleBar.classList.toggle('collapsed');
     });
     setupStaticButtons(
-        handleHTMLUpload,
-        handlePdrUpload,
         resetStack,
         requestRender,
         requestUIDraw,
@@ -611,6 +700,9 @@ async function appSetup() {
     setupPaneDrag();
     setupPDRErrorModal(unlockApp);
     setupHelpModal(lockApp, unlockApp);
+    setupOpenFileModal({
+        handleUpload: handleHTMLUpload, handlePdrUpload, lockApp, unlockApp
+    });
     setupAboutModal(lockApp, unlockApp);
     setupWindow(resizeAndRedraw);
     await drawPattern('spiral');

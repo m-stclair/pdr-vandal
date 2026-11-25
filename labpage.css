@@ -39,18 +39,30 @@ body {
     height: 100vh;
 }
 
+/* Top bar takes its natural height; #mainLayout gets exactly what remains. */
+#appRoot {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
 #mainLayout {
     display: flex;
     flex-direction: row;
     flex-wrap: nowrap;
     width: 100%;
-    height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
     min-width: 600px; /* Prevent extreme collapse */
     overflow: hidden;
 }
 
+/* Never stretch the canvas: its CSS box must match its drawing buffer, which
+   resizeAndRedraw() sizes from #leftPane. */
 #glitchCanvas {
     margin: 0;
+    flex: none;
 }
 
 /* Snap container to bottom of viewport */
@@ -69,7 +81,13 @@ body {
   gap: 0.5em;
 }
 
+/* Nothing currently populates this; don't let the empty bar cover the page. */
+#mobile-topbar-target:empty {
+  display: none;
+}
+
 #topBar {
+  flex-shrink: 0;
   display: flex;
   gap: 0.5em;
   align-items: center;
@@ -287,17 +305,17 @@ input, select, textarea, button {
     max-width: calc(100% - 50px);
     padding: 0;
     text-align: center;
-    overflow-x: clip;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     align-items: center;
     width: auto;
     min-width: 100px;
+    min-height: 0;
 }
 
 #rightPane {
     width: 300px;
-    height: calc(100vh - 2.5em);
     flex: 1 1 0;
     min-width: 300px;
     max-width: 100vw;
@@ -367,6 +385,89 @@ input, select, textarea, button {
   font-size: 1em;
   cursor: pointer;
   border: none;
+}
+
+/* "Open file" dialog */
+#drop-zone {
+  border: 2px dashed #7f8c8d;
+  border-radius: 8px;
+  min-height: 6em;
+  margin: 0.5em 0 1em;
+  padding: 1em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  cursor: pointer;
+}
+
+#drop-zone.dragover,
+#drop-zone:focus-visible {
+  border-color: #0af;
+  background: rgba(0, 170, 255, 0.1);
+  outline: none;
+}
+
+#open-file-message {
+  min-height: 1.2em;
+  color: #f1c40f;
+}
+
+#staged-files {
+  border: 1px solid #555;
+  border-radius: 4px;
+  margin: 0 0 1em;
+}
+
+#staged-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#staged-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.2em 0;
+}
+
+#staged-list label {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  overflow-wrap: anywhere;
+}
+
+.staged-size {
+  color: #95a5a6;
+  white-space: nowrap;
+}
+
+.primary-tag {
+  font-size: 0.8em;
+  padding: 0 0.4em;
+  border-radius: 3px;
+  background: #0af;
+  color: #000;
+}
+
+.open-file-buttons {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5em;
+}
+
+#leftover-note {
+  margin-right: auto;
+  color: #95a5a6;
+}
+
+body.drag-target #appRoot {
+  outline: 3px dashed #0af;
+  outline-offset: -3px;
 }
 
 

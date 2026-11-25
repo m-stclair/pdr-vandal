@@ -31,11 +31,14 @@ export function setupPaneDrag() {
 
         const layoutRect = layout.getBoundingClientRect();
         const minLeft = 100;
-        const maxLeft = layoutRect.width - 200; // leave min space for rightPane
+        // leave rightPane its CSS min-width (300px) plus the bar itself
+        const maxLeft = layoutRect.width - 300 - dragBar.offsetWidth;
 
         const newLeft = Math.min(Math.max(e.clientX - layoutRect.left, minLeft), maxLeft);
 
-        leftPane.style.flex = `0 0 ${newLeft}px`;
+        // flex-shrink 1 so a later window narrowing shrinks this pane
+        // instead of pushing rightPane off-screen
+        leftPane.style.flex = `0 1 ${newLeft}px`;
     });
 
     document.addEventListener("mouseup", () => {
@@ -56,8 +59,6 @@ export function moveEffectInStack(effectStack, from, to) {
 
 
 // top-level buttons
-const uploadButton = gid('upload');
-const uploadPDRButton = gid('pdr-upload');
 // const saveBtn = gid("save-stack");
 // const loadBtn = gid("load-stack");
 const clearBtn = gid("clear-stack");
@@ -65,19 +66,8 @@ const clearBtn = gid("clear-stack");
 
 
 export function setupStaticButtons(
-    handleUpload, handlePdrUpload, resetStack, requestRender, requestUIDraw,
-    setFreezeAnimationButtonFlag
+    resetStack, requestRender, requestUIDraw, setFreezeAnimationButtonFlag
 ) {
-    uploadButton.addEventListener(
-        'change', (e) => {
-            handleUpload(e);
-            uploadButton.value = "";
-        });
-    uploadPDRButton.addEventListener(
-        'change', async (e) => {
-            await handlePdrUpload(e);
-            uploadPDRButton.value = "";
-        });
     clearBtn.addEventListener("click", () => {
         resetStack();
         requestUIDraw();
@@ -93,8 +83,9 @@ export function setupStaticButtons(
 }
 
 export function setupWindow(resizeAndRedraw) {
-    window.addEventListener('resize', resizeAndRedraw);
-    window.addEventListener('orientationchange', resizeAndRedraw);
+    // Track the pane itself rather than the window, so divider drags and
+    // layout changes resize the canvas too.
+    new ResizeObserver(() => resizeAndRedraw()).observe(leftPane);
 }
 
 
@@ -234,13 +225,3 @@ export function setupAboutModal(lockApp, unlockApp) {
 //         }
 //     });
 // }
-
-export function setupDragAndDrop(handleUpload) {
-    document.addEventListener('dragover', e => e.preventDefault());
-    document.addEventListener('drop', e => {
-        e.preventDefault();
-        const files = Array.from(e.dataTransfer.files)
-            .filter(f => f.type.startsWith('image/'));
-        handleUpload(files[0]);
-    });
-}

@@ -38,14 +38,18 @@
             <span class="close-btn" id="close-help-modal">&times;</span>
 
         <h4>Basic Usage</h4>
-        <p>To open an image, click the "Open With PDR" button and select the file or files you wish to open. If
+        <p>To open an image, drag and drop its file(s) onto the window, or click the "Open With PDR" button and
+            drop the file(s) into the dialog (or click "Browse…" to pick them). Click "Open" when the files you
+            want are listed. A single PNG, JPEG or WebP image dropped onto the window opens with the browser
+            reader instead (see "Browser Image Loading" below). If
             this is the first image you've opened with PDR in the session, PDR will install (10-20 seconds). After
             opening, the image will display in the main pane. You can zoom the image in and out using mouse or
             touchpad scroll. When zoomed, you can pan the image by dragging.</p>
-        <p>If opening a PDS file with detached label (e.g. an PDS4 xml label), then select both the observational
-            data file and the label file in the file selection dialog. PDR will use the information in the label
-            to parse the observational data.</p>
-        </p>
+        <p>If opening a PDS file with detached label (e.g. a PDS4 xml label), add both the observational
+            data file and the label file to the "Open With PDR" dialog, either together or one at a time. PDR will
+            use the information in the label to parse the observational data. The label (.xml or .lbl) is read
+            first; if PDR can't tell which file that should be, it asks you to choose. Files you've added stay in
+            the dialog if you close it, until you open them or click "Clear".</p>
         <h4>Switching Bands and Objects</h4>
         <p>If the product you've uploaded has more than one image (like a FITS file with multiple image HDUs), you can
             switch between them using the "object" dropdown in the upper right-hand corner. If an image has multiple
@@ -72,12 +76,38 @@
             fully clear pdr-vandal's cache by clicking "close image" and then try again.</p>
         <h4>Browser Image Loading</h4>
         <p>If you want to open a "desktop" format image like a JPEG or PNG, you can open it with standard browser
-            features instead of PDR by clicking the "Open With Browser" button in the top bar. Desktop images will
+            features instead of PDR by clicking the "Open With Browser" button in the top bar, or by dropping a single image
+            onto the window. Desktop images will
             load more quickly this way, but will not support channel flipping or some PDR features like accessing
             secondary images in MPOs.</p>
         <h4>Privacy</h4>
         <p>pdr-vandal runs locally in your browser. It does not upload files to a server for processing. Your files
             never leave your computer.</p>
+    </div>
+</div>
+
+<div id="open-file-modal" class="modal">
+    <div id="open-file-modal-content" class="modal-content">
+        <span class="close-btn" id="close-open-file-modal">&times;</span>
+        <h4 id="open-file-title">Open With PDR</h4>
+        <div id="drop-zone" role="button" tabindex="0" aria-describedby="open-file-message"></div>
+        <input type="file" id="pdr-upload" style="display: none" multiple/>
+        <input type="file" id="upload" accept="image/png,image/jpeg,image/webp" style="display: none"/>
+        <button id="browse-files" class="file-upload-button">Browse…</button>
+        <p id="open-file-message" aria-live="polite"></p>
+        <div id="pdr-controls">
+            <fieldset id="staged-files">
+                <legend>Files to open</legend>
+                <p id="primary-hint" hidden>Choose the primary file (the one PDR reads first, usually the label).</p>
+                <ul id="staged-list"></ul>
+            </fieldset>
+            <div class="open-file-buttons">
+                <span id="leftover-note" hidden></span>
+                <button id="clear-staged">Clear</button>
+                <button id="cancel-open-file">Cancel</button>
+                <button id="open-staged" disabled>Open</button>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -130,11 +160,9 @@
 
 <div id="appRoot">
     <div id="topBar">
-    <input type="file" id="pdr-upload" style="display: none" multiple/>
-    <label for="pdr-upload" class="file-upload-button">Open With PDR</label>
+    <button id="open-pdr-dialog" class="file-upload-button">Open With PDR</button>
     ||
-    <label for="upload" class="file-upload-button">Open With Browser</label>
-    <input type="file" id="upload" accept = "image/png,image/jpeg,image/webp" style="display: none"/>
+    <button id="open-browser-dialog" class="file-upload-button">Open With Browser</button>
     || <button id="closeImage">Close Image</button>
     || <button id="exportImage">Export Image</button>
     || <button id="exportView">Export View</button>
