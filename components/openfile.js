@@ -85,7 +85,8 @@ export function setupOpenFileModal({handleUpload, handlePdrUpload, lockApp, unlo
         const names = staged.map((f) => f.name);
         const picked = names.indexOf(userPrimary);
         const auto = pickPrimary(names);
-        return {index: auto.ambiguous && picked >= 0 ? picked : auto.index, ambiguous: auto.ambiguous};
+        // when ambiguous, the user must choose; index is -1 until they do
+        return {index: auto.ambiguous ? picked : auto.index, ambiguous: auto.ambiguous};
     }
 
     function render() {
@@ -130,7 +131,7 @@ export function setupOpenFileModal({handleUpload, handlePdrUpload, lockApp, unlo
         const nLeftover = staged.filter((f) => leftover.has(f)).length;
         leftoverNote.hidden = nLeftover === 0;
         leftoverNote.textContent = `${nLeftover} file(s) from earlier`;
-        openButton.disabled = staged.length === 0;
+        openButton.disabled = staged.length === 0 || index < 0;
     }
 
     function addFiles(files, skipped = []) {
@@ -193,6 +194,10 @@ export function setupOpenFileModal({handleUpload, handlePdrUpload, lockApp, unlo
     async function openStaged() {
         if (staged.length === 0) return;
         const {index} = primaryIndex();
+        if (index < 0) {
+            setMessage("Choose the primary file first.");
+            return;
+        }
         const files = [staged[index], ...staged.filter((_, i) => i !== index)];
         clearStaged();
         closeDialog();
@@ -210,6 +215,7 @@ export function setupOpenFileModal({handleUpload, handlePdrUpload, lockApp, unlo
     gid("open-pdr-dialog").addEventListener("click", () => openDialog("pdr"));
     gid("open-browser-dialog").addEventListener("click", () => openDialog("browser"));
     gid("browse-files").addEventListener("click", browse);
+    dropZone.addEventListener("click", browse);
     gid("close-open-file-modal").addEventListener("click", closeDialog);
     gid("cancel-open-file").addEventListener("click", closeDialog);
     gid("clear-staged").addEventListener("click", clearStaged);

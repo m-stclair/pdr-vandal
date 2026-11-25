@@ -30,6 +30,7 @@ STATE = """
         leftover: document.getElementById('leftover-note').hidden
             ? null : document.getElementById('leftover-note').textContent,
         openDisabled: document.getElementById('open-staged').disabled,
+        checked: document.querySelectorAll('#staged-list input[type=radio]:checked').length,
     };
 """
 
@@ -79,8 +80,21 @@ def test_dialog_stages_files_one_at_a_time(app):
 def test_ambiguous_primary_offers_a_choice(app):
     app.page.click("#open-pdr-dialog")
     _drop(app, ["a.xml", "b.xml"], "#drop-zone")
-    assert _state(app)["radios"] == 2
+    s = _state(app)
+    assert s["radios"] == 2
     assert app.page.is_visible("#primary-hint")
+    # nothing is chosen for the user, so Open waits for a choice
+    assert s["checked"] == 0 and s["openDisabled"]
+    app.page.locator("#staged-list li", has_text="b.xml").locator("input[type=radio]").check()
+    s = _state(app)
+    assert s["checked"] == 1 and not s["openDisabled"]
+
+
+def test_clicking_drop_zone_opens_file_chooser(app):
+    app.page.click("#open-pdr-dialog")
+    with app.page.expect_file_chooser() as chooser:
+        app.page.click("#drop-zone")
+    assert chooser.value.is_multiple()
 
 
 def test_same_name_replaces(app):
