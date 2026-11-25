@@ -86,4 +86,16 @@ pytest tests/test_dcs.py    # one area; or select tests with -k <name>
 do nearly anything you want with this code. Some ancillary shaders bear 
 additional licenses (attached as headers to individual files).
 
+### Third-party code
+
+- `zscale_limits()` in `pdrview.py`, which powers Input Stretch's ZSCALE clip
+  mode, is vendored and lightly adapted from
+  [astropy](https://www.astropy.org/)'s
+  `astropy.visualization.ZScaleInterval`, itself derived from IRAF's zscale
+  via [stsci.numdisplay](https://github.com/spacetelescope/stsci.numdisplay).
+  It is used under astropy's BSD 3-Clause License (copyright Astropy
+  Developers) and the AURA BSD 3-Clause License (copyright Association of
+  Universities for Research in Astronomy). Both licenses are reproduced in
+  full above the function.
+
 Contributions are not solicited at this time. Feel free to file Issues.

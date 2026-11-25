@@ -16,7 +16,8 @@ const {
     'NONE',
     'STDEV',
     'P02_P98',
-    'ABSOLUTE'
+    'ABSOLUTE',
+    'ZSCALE'
 ])
 
 const {
@@ -46,6 +47,8 @@ export function inputStretchBounds(
     const std = instance.auxiliaryCache.std;
     const p02 = instance.auxiliaryCache.p02;
     const p98 = instance.auxiliaryCache.p98;
+    const zmin = instance.auxiliaryCache.zmin;
+    const zmax = instance.auxiliaryCache.zmax;
     const scale = instance.auxiliaryCache.scale;
     const offset = instance.auxiliaryCache.offset;
     let min, max;
@@ -64,6 +67,15 @@ export function inputStretchBounds(
             [min, max] = [0, 1];
         } else {
             [min, max] = [p02, p98];
+        }
+    }
+    else if (clipModeN === ClipEnum.ZSCALE) {
+        // IRAF zscale limits, computed in pdrview.zscale_limits (vendored
+        // from astropy's ZScaleInterval)
+        if (zmin === undefined || zmax === undefined) {
+            [min, max] = [0, 1];
+        } else {
+            [min, max] = [zmin, zmax];
         }
     }
     else if (clipModeN === ClipEnum.ABSOLUTE) {

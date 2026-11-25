@@ -201,8 +201,10 @@ inputStretchEffect.pinned = true;
  * patterns.
  * @param {{pixels: Float32Array, width: number, height: number,
  *   channels: number, scale: number, offset: number, mean: number,
- *   std: number, p02: number, p98: number}} arrayData pixels normalized as
- *   (raw - offset) / scale, with statistics in the same normalized units
+ *   std: number, p02: number, p98: number, zmin?: number,
+ *   zmax?: number}} arrayData pixels normalized as (raw - offset) / scale,
+ *   with statistics in the same normalized units; zmin / zmax are the
+ *   zscale limits that drive the ZSCALE clip mode
  */
 export function loadFloatSource(arrayData) {
     appRenderer.setFloat32Source(arrayData.pixels, arrayData.width,
@@ -230,6 +232,8 @@ export function loadFloatSource(arrayData) {
     auxCache.std = arrayData.std;
     auxCache.p02 = arrayData.p02;
     auxCache.p98 = arrayData.p98;
+    auxCache.zmin = arrayData.zmin;
+    auxCache.zmax = arrayData.zmax;
     auxCache.scale = arrayData.scale;
     auxCache.offset = arrayData.offset;
 }

@@ -122,6 +122,8 @@ class BandPixels:
     std: float
     p02: float
     p98: float
+    zmin: float
+    zmax: float
 
 
 @dataclasses.dataclass
@@ -402,6 +404,176 @@ def prep_masked_array(data: pdr.Data, objname: str) -> np.ma.MaskedArray:
     return arr
 
 
+# ---------------------------------------------------------------------------
+# zscale_limits() is vendored from astropy, to avoid depending on astropy:
+#   astropy.visualization.ZScaleInterval.get_limits (astropy 8.0.3)
+#   https://github.com/astropy/astropy/blob/main/astropy/visualization/interval.py
+# Astropy's implementation is in turn based on IRAF's zscale, as implemented
+# in stsci.numdisplay:
+#   https://github.com/spacetelescope/stsci.numdisplay/blob/master/lib/stsci/numdisplay/zscale.py
+#
+# Modifications from astropy's version: the ZScaleInterval class and its
+# get_limits() method are flattened into a single function taking the same
+# parameters as keyword arguments; BaseInterval._process_values() is inlined
+# (masked/non-finite values are dropped); the result is returned as Python
+# floats. The algorithm itself is unchanged.
+#
+# The astropy and AURA licenses are reproduced below, as both require.
+#
+# ----- astropy LICENSE.rst -----
+# Copyright (c) 2011-2026, Astropy Developers
+#
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice,
+#   this list of conditions and the following disclaimer.
+# * Redistributions in binary form must reproduce the above copyright notice,
+#   this list of conditions and the following disclaimer in the documentation
+#   and/or other materials provided with the distribution.
+# * Neither the name of the Astropy Team nor the names of its contributors may
+#   be used to endorse or promote products derived from this software without
+#   specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+#
+# ----- astropy licenses/AURA_LICENSE.rst -----
+# Copyright (C) 2005 Association of Universities for Research in Astronomy
+# (AURA)
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#     1. Redistributions of source code must retain the above copyright
+#       notice, this list of conditions and the following disclaimer.
+#
+#     2. Redistributions in binary form must reproduce the above
+#       copyright notice, this list of conditions and the following
+#       disclaimer in the documentation and/or other materials provided
+#       with the distribution.
+#
+#     3. The name of AURA and its representatives may not be used to
+#       endorse or promote products derived from this software without
+#       specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY AURA ``AS IS'' AND ANY EXPRESS OR IMPLIED
+# WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL AURA BE LIABLE FOR ANY DIRECT, INDIRECT,
+# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+# OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+# TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+# USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+# DAMAGE.
+# ---------------------------------------------------------------------------
+def zscale_limits(
+    values,
+    n_samples: int = 1000,
+    contrast: float = 0.25,
+    max_reject: float = 0.5,
+    min_npixels: int = 5,
+    krej: float = 2.5,
+    max_iterations: int = 5,
+) -> tuple[float, float]:
+    """
+    Return (vmin, vmax) display limits using IRAF's zscale algorithm.
+
+    Vendored from astropy's `ZScaleInterval.get_limits` (see the credit and
+    license notice above); parameters have the same meaning and defaults:
+
+    n_samples : number of points sampled from the array.
+    contrast : scaling factor (0-1); larger values narrow the interval.
+    max_reject : if more than max_reject * npixels pixels are rejected,
+        return the min and max of the samples.
+    min_npixels : if fewer than this many pixels remain after rejection,
+        return the min and max of the samples.
+    krej : number of sigma used for rejection.
+    max_iterations : maximum number of rejection iterations.
+
+    Masked and non-finite values are ignored.
+    """
+    # Inlined from astropy's BaseInterval._process_values. Boolean indexing
+    # returns a copy, so the in-place sort below never touches the caller's
+    # array.
+    data = np.ma.getdata(values)
+    mask = np.ma.getmask(values)
+    ok = np.isfinite(data)
+    if mask is not np.ma.nomask:
+        ok &= ~mask
+    values = data[ok]
+
+    # Sample the image
+    stride = int(max(1.0, values.size / n_samples))
+    samples = values[::stride][:n_samples]
+    samples.sort()
+
+    npix = len(samples)
+    vmin = samples[0]
+    vmax = samples[-1]
+
+    # Fit a line to the sorted array of samples
+    minpix = max(min_npixels, int(npix * max_reject))
+    x = np.arange(npix)
+    ngoodpix = npix
+    last_ngoodpix = npix + 1
+
+    # Bad pixels mask used in k-sigma clipping
+    badpix = np.zeros(npix, dtype=bool)
+
+    # Kernel used to dilate the bad pixels mask
+    ngrow = max(1, int(npix * 0.01))
+    kernel = np.ones(ngrow, dtype=bool)
+
+    for _ in range(max_iterations):
+        if ngoodpix >= last_ngoodpix or ngoodpix < minpix:
+            break
+
+        fit = np.polyfit(x, samples, deg=1, w=(~badpix).astype(int))
+        fitted = np.poly1d(fit)(x)
+
+        # Subtract fitted line from the data array
+        flat = samples - fitted
+
+        # Compute the k-sigma rejection threshold
+        threshold = krej * flat[~badpix].std()
+
+        # Detect and reject pixels further than k*sigma from the
+        # fitted line
+        badpix[(flat < -threshold) | (flat > threshold)] = True
+
+        # Convolve with a kernel of length ngrow
+        badpix = np.convolve(badpix, kernel, mode="same")
+
+        last_ngoodpix = ngoodpix
+        ngoodpix = np.sum(~badpix)
+
+    if ngoodpix >= minpix:
+        slope, _ = fit
+
+        if contrast > 0:
+            slope = slope / contrast
+        center_pixel = (npix - 1) // 2
+        median = np.median(samples)
+        vmin = max(vmin, median - (center_pixel - 1) * slope)
+        vmax = min(vmax, median + (npix - center_pixel) * slope)
+
+    return float(vmin), float(vmax)
+
+
 def _compute_stats(pixels: np.ndarray) -> dict:
     """
     Compute summary statistics on finite, unmasked pixels only.
@@ -409,11 +581,14 @@ def _compute_stats(pixels: np.ndarray) -> dict:
     flat = pixels.compressed() if isinstance(pixels, np.ma.MaskedArray) else pixels.ravel()
     flat = flat[np.isfinite(flat)]
     p02, p98 = np.percentile(flat, [2, 98])
+    zmin, zmax = zscale_limits(flat)
     return {
         'mean': float(np.mean(flat)),
         'std': float(np.std(flat)),
         'p02': float(p02),
         'p98': float(p98),
+        'zmin': zmin,
+        'zmax': zmax,
     }
 
 
@@ -469,6 +644,8 @@ def _scale_and_cache(
         std=raw_stats['std'] / scale,
         p02=rescale(raw_stats['p02']),
         p98=rescale(raw_stats['p98']),
+        zmin=rescale(raw_stats['zmin']),
+        zmax=rescale(raw_stats['zmax']),
         channels=channels
     )
     obj.band_pixels[band] = bandpixels
@@ -650,6 +827,8 @@ def get_array_image(
             "std": float(bandpixels.std),
             "p02": float(bandpixels.p02),
             "p98": float(bandpixels.p98),
+            "zmin": float(bandpixels.zmin),
+            "zmax": float(bandpixels.zmax),
         })
     except Exception as e:
         return to_js_unproxied({

@@ -124,3 +124,53 @@ def test_bsq_to_bip_band_interleave(pdrview):
         for x in range(4):
             i = (y * 4 + x) * 3
             assert list(bip[i:i + 3]) == [bsq[0, y, x], bsq[1, y, x], bsq[2, y, x]]
+
+
+def _zscale_cases():
+    rng = np.random.default_rng(11)
+    noisy = rng.normal(1000, 25, (300, 400))
+    noisy.flat[rng.choice(noisy.size, 500, replace=False)] = 60000  # hot pixels
+    return {
+        "gaussian+outliers": noisy,
+        "ramp": np.linspace(-5, 5, 5000).reshape(50, 100),
+        "uniform-small": rng.random(37),
+        "fewer-than-min-npixels": np.array([3.0, 1.0, 2.0]),
+        "constant": np.full((10, 10), 7.0),
+    }
+
+
+@pytest.mark.parametrize("case", list(_zscale_cases()))
+def test_zscale_limits_match_astropy(pdrview, case):
+    """The vendored zscale must reproduce astropy's ZScaleInterval."""
+    astropy_viz = pytest.importorskip("astropy.visualization")
+    values = _zscale_cases()[case]
+    expected = astropy_viz.ZScaleInterval().get_limits(values)
+    assert_close(pdrview.zscale_limits(values), expected, 1e-12, f"zscale ({case})")
+
+
+def test_zscale_limits_ignore_masked_and_nonfinite_without_mutating(pdrview):
+    astropy_viz = pytest.importorskip("astropy.visualization")
+    rng = np.random.default_rng(3)
+    data = rng.normal(0, 1, 2000)
+    data[::97] = np.nan
+    data[5] = np.inf
+    masked = np.ma.masked_array(data, mask=np.zeros_like(data, dtype=bool))
+    masked[10:20] = np.ma.masked
+    before = masked.data.copy()
+    expected = astropy_viz.ZScaleInterval().get_limits(masked)
+    assert_close(pdrview.zscale_limits(masked), expected, 1e-12, "masked zscale")
+    assert_equal(masked.data, before, "input left unmodified")
+
+
+def test_zscale_stats_are_in_normalized_units(pdrview):
+    astropy_viz = pytest.importorskip("astropy.visualization")
+    cube = _rgb_cube()
+    entry, obj, cache = _objects(pdrview, 3, 20, 30)
+    bp, _ = pdrview._scale_and_cache(entry, obj, "RGB", cube, pdrview._compute_stats(cube), cache)
+    valid = cube.compressed()
+    offset, scale = valid.min(), valid.max() - valid.min()
+    zmin, zmax = astropy_viz.ZScaleInterval().get_limits(valid)
+    assert_close(
+        [bp.zmin, bp.zmax], [(zmin - offset) / scale, (zmax - offset) / scale],
+        1e-12, "normalized zscale limits",
+    )
