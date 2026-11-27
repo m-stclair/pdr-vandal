@@ -169,3 +169,159 @@ def test_zoom_keeps_the_pixel_under_the_cursor(app):
         span = app.js("const vr = R.getViewRect(); return R.getViewSpan(vr.w, vr.h);")
         assert r["u1"] - r["u0"] == pytest.approx(min(span[0], 1)) and r["v1"] - r["v0"] == pytest.approx(min(span[1], 1)), \
             "view extends outside the image"
+
+
+def test_source_uv_to_client_inverts_client_to_source_uv(app):
+    """The crop tool draws its box with sourceUVToClient; it must land where
+    clientToSourceUV reads the same uv, at any zoom and pan."""
+    app.load_float(np.random.default_rng(1).random((300, 500)).astype(np.float32))
+    for zoom, center in [(1.0, (0.5, 0.5)), (3.0, (0.3, 0.6)), (7.5, (0.8, 0.2))]:
+        app.set_view(zoom, center)
+        for fx, fy in [(0.1, 0.2), (0.5, 0.5), (0.9, 0.75)]:
+            cx, cy = app.client_point(fx, fy)
+            back = app.js("""
+                const {srcU, srcV} = R.clientToSourceUV(arg[0], arg[1]);
+                const c = R.sourceUVToClient(srcU, srcV);
+                return [c.clientX, c.clientY];
+            """, [cx, cy])
+            assert back == pytest.approx([cx, cy], abs=1e-6)
+
+
+def test_pan_can_be_disabled(app):
+    """Crop selection turns panning off; a drag then leaves the view alone."""
+    app.load_float(np.random.default_rng(2).random((300, 500)).astype(np.float32))
+    app.set_view(4.0, (0.5, 0.5))
+    moved = app.js("""
+        const c = R.gl.canvas, r = c.getBoundingClientRect();
+        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+        const drag = () => {
+            const before = [R.centerX, R.centerY];
+            for (const [type, dx] of [['pointerdown', 0], ['pointermove', 40], ['pointerup', 40]]) {
+                c.dispatchEvent(new PointerEvent(type,
+                    {clientX: x + dx, clientY: y, pointerId: 1, button: 0, bubbles: true}));
+            }
+            return R.centerX !== before[0] || R.centerY !== before[1];
+        };
+        S.panInterface.enabled = false;
+        const off = drag();
+        S.panInterface.enabled = true;
+        return [off, drag()];
+    """)
+    assert moved == [False, True]
+
+
+@pytest.mark.parametrize("high_precision", [False, True])
+def test_full_image_export_restores_display_canvas(app, high_precision):
+    """Export Image renders offscreen at image size; afterwards the canvas
+    must again fill the pane (it was once restored to the working-texture
+    size, so the image drew into only part of the display)."""
+    app.load_float(np.random.default_rng(4).random((300, 900)).astype(np.float32))
+    before = app.js("return [R.gl.canvas.width, R.gl.canvas.height, R.getViewRect()];")
+    app.js("await R.createExport(0, true, arg); S.requestRender(); await frames();", high_precision)
+    after = app.js("return [R.gl.canvas.width, R.gl.canvas.height, R.getViewRect()];")
+    assert after == before
+
+
+# --- Default image ---------------------------------------------------------------
+
+def test_startup_and_close_image_show_the_bayer_pattern(app):
+    """The app opens on the bayer rggb test pattern (there is no pattern
+    picker), and Close Image goes back to it."""
+    state = "return [document.getElementById('activeFile').innerText, R.source.width, R.source.height];"
+    assert app.js("return document.getElementById('test-pattern-select');") is None
+    assert app.js(state) == ["bayer rggb test pattern", 2048, 2048]
+    app.load_float(np.random.default_rng(3).random((300, 400)).astype(np.float32))
+    assert app.js("return [R.source.width, R.source.height];") == [400, 300]
+    after = app.js("""
+        document.getElementById('closeImage').click();
+        for (let i = 0; i < 200 && R.source?.width !== 2048; i++) await frames(1);
+    """ + state)
+    assert after == ["bayer rggb test pattern", 2048, 2048]
+
+
+# Snapshot of the source and toolbar: corners of the displayed pixels, size,
+# and which toolbar buttons are usable.
+_GEOM_STATE = """
+    const d = R.source.data, w = R.source.width, h = R.source.height;
+    const tb = document.getElementById('geometryToolbar');
+    return {
+        w, h, corners: [d[0], d[w - 1], d[(h - 1) * w], d[h * w - 1]],
+        visible: getComputedStyle(tb).display !== 'none',
+        disabled: [...tb.querySelectorAll('button')].filter(b => b.disabled).map(b => b.id),
+        status: document.getElementById('geom-status').innerText,
+    };
+"""
+
+
+def _click(app, button_id):
+    app.js("document.getElementById(arg).click(); await frames(3);", button_id)
+
+
+def test_geometry_toolbar_works_on_the_startup_pattern(app):
+    """Crop / rotate / flip apply to the start-up Bayer pattern (made in JS,
+    no PDR product), with undo, reset, and Close Image back to the
+    untransformed pattern."""
+    start = app.js(_GEOM_STATE)
+    assert start["visible"]
+    assert start["disabled"] == ["geom-undo", "geom-reset"]
+    assert start["status"] == "full 2048×2048 array"
+    tl, tr, bl, br = start["corners"]
+
+    _click(app, "geom-cw")
+    rotated = app.js(_GEOM_STATE)
+    # clockwise: the old bottom-left is now the top-left, etc.
+    assert rotated["corners"] == [bl, tl, br, tr]
+    assert rotated["disabled"] == []
+    assert "rot90" in rotated["status"]
+
+    _click(app, "geom-flipH")
+    assert app.js(_GEOM_STATE)["corners"] == [tl, bl, tr, br]
+
+    _click(app, "geom-undo")
+    _click(app, "geom-undo")
+    assert app.js(_GEOM_STATE) == start
+
+    # crop to view after zooming in: a smaller array, traced to the original
+    app.set_view(zoom=4.0, center=(0.25, 0.25))
+    _click(app, "geom-crop-view")
+    cropped = app.js(_GEOM_STATE)
+    assert cropped["w"] < 2048 and cropped["h"] < 2048
+    assert "[orig (" in app.readout(*app.client_point(0.5, 0.5))
+
+    _click(app, "geom-reset")
+    reset = app.js(_GEOM_STATE)
+    assert (reset["w"], reset["h"], reset["corners"]) == (2048, 2048, start["corners"])
+    assert reset["disabled"] == ["geom-reset"]  # undo can take back the reset
+
+    _click(app, "geom-ccw")
+    closed = app.js("""
+        document.getElementById('closeImage').click();
+        const undo = document.getElementById('geom-undo');
+        for (let i = 0; i < 200 && !undo.disabled; i++) await frames(1);
+    """ + _GEOM_STATE)
+    assert closed == start
+
+
+def test_dropped_browser_image_hides_the_geometry_toolbar(app):
+    """A browser-decoded image has no float array to crop or rotate."""
+    out = app.js("""
+        const cv = new OffscreenCanvas(2, 2);
+        cv.getContext('2d').fillRect(0, 0, 2, 2);
+        const blob = await cv.convertToBlob({type: 'image/png'});
+        const dt = new DataTransfer();
+        dt.items.add(new File([blob], 'pic.png', {type: 'image/png'}));
+        for (const type of ['dragenter', 'dragover', 'drop']) {
+            document.body.dispatchEvent(new DragEvent(type, {dataTransfer: dt, bubbles: true, cancelable: true}));
+        }
+        for (let i = 0; i < 200 && R.source?.width !== 2; i++) await frames(1);
+        return getComputedStyle(document.getElementById('geometryToolbar')).display;
+    """)
+    assert out == "none"
+    # and Close Image brings it back with the pattern
+    shown = app.js("""
+        document.getElementById('closeImage').click();
+        for (let i = 0; i < 200 && R.source?.width !== 2048; i++) await frames(1);
+        await frames(2);
+        return getComputedStyle(document.getElementById('geometryToolbar')).display;
+    """)
+    assert shown != "none"

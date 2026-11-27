@@ -5,9 +5,12 @@ inside the browser fixtures, so `pytest -m "not browser"` runs without it.
 """
 import base64
 import functools
+import importlib.util
 import re
 import http.server
+import sys
 import threading
+import types
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +33,25 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+
+@pytest.fixture(scope="session")
+def pdrview():
+    """pdrview.py, importable outside Pyodide."""
+    # pdrview runs under Pyodide; stub the one Pyodide import it needs.
+    if "pyodide.ffi" not in sys.modules:
+        pyodide = types.ModuleType("pyodide")
+        ffi = types.ModuleType("pyodide.ffi")
+        ffi.to_js = lambda obj, **kwargs: obj
+        # stand-in for Pyodide's JS-null sentinel (type JsNull)
+        ffi.jsnull = type("JsNull", (), {})()
+        pyodide.ffi = ffi
+        sys.modules["pyodide"] = pyodide
+        sys.modules["pyodide.ffi"] = ffi
+    spec = importlib.util.spec_from_file_location("pdrview", REPO / "pdrview.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture(scope="session")

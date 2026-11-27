@@ -3,7 +3,6 @@ import {gid} from "./utils/helpers.js";
 import {hsv2Rgb} from "./utils/colorutils.js";
 import {makeBayerTestMosaic} from "./utils/bayer_pattern.js";
 import {approxPercentiles} from "./utils/stretch.js";
-import {placeholderOption} from "./ui.js";
 
 
 // Resolves once the pattern is the image source, so callers that await
@@ -170,28 +169,42 @@ async function drawSinusoid(amplitude = 512, frequency = 0.05) {
 // Simulated raw RGGB frame for testing and demoing the Debayer effect:
 // loaded as single-band float data, like a raw PDS image, with the
 // statistics Input Stretch's clip modes use (already in [0, 1], so scale 1
-// and offset 0).
+// and offset 0). Returns the {pixels, width, height} array it loaded, so the
+// crop / rotate toolbar can transform it.
 export async function drawBayerTest() {
     const size = 2048;
-    const pixels = makeBayerTestMosaic(size);
-    let sum = 0, sum2 = 0;
-    for (const v of pixels) {
-        sum += v;
-        sum2 += v * v;
-    }
-    const n = pixels.length;
-    const mean = sum / n;
-    const [p02, p98] = approxPercentiles(pixels, 2, 98);
-    loadFloatSource({
-        pixels, width: size, height: size, channels: 1, scale: 1, offset: 0,
-        mean, std: Math.sqrt(Math.max(0, sum2 / n - mean * mean)), p02, p98,
-    });
+    const array = {pixels: makeBayerTestMosaic(size), width: size, height: size};
+    loadFloatSource(floatArrayData(array.pixels, size, size));
     clearRenderCache();
     resizeAndRedraw();
     gid("activeFile").innerText = "bayer rggb test pattern";
     activeFile[0] = "bayer rggb test pattern";
+    return array;
 }
 
+/**
+ * loadFloatSource() input for a single-band array of values in [0, 1]
+ * (scale 1, offset 0), with the statistics Input Stretch's clip modes use;
+ * non-finite pixels are left out of them.
+ */
+export function floatArrayData(pixels, width, height) {
+    let sum = 0, sum2 = 0, n = 0;
+    for (const v of pixels) {
+        if (!Number.isFinite(v)) continue;
+        sum += v;
+        sum2 += v * v;
+        n++;
+    }
+    const mean = n ? sum / n : 0;
+    const [p02, p98] = approxPercentiles(pixels, 2, 98);
+    return {
+        pixels, width, height, channels: 1, scale: 1, offset: 0,
+        mean, std: n ? Math.sqrt(Math.max(0, sum2 / n - mean * mean)) : 0, p02, p98,
+    };
+}
+
+// Returns the pattern's {pixels, width, height} float array if it is one,
+// else undefined (patterns drawn on a canvas).
 export async function drawPattern(pattern) {
     switch (pattern) {
         case "black":
@@ -219,25 +232,11 @@ export async function drawPattern(pattern) {
             await drawBlank();
             break;
         case "bayer rggb":
-            await drawBayerTest();
-            break;
+            // the only pattern made as float data, which geometry can apply to
+            return await drawBayerTest();
         default:
             throw new Error(`unknown pattern ${pattern}`);
 
     }
 
 }
-
-
-export function populateTestSelect() {
-    const testSelect = gid("test-pattern-select");
-    testSelect.appendChild(placeholderOption("-- pattern --"));
-    ["black", "white", "rgb", "gray", "wheel", "spiral", "sinusoid", "bayer rggb"].forEach(type => {
-        const opt = document.createElement("option");
-        opt.value = opt.text = type;
-        testSelect.appendChild(opt);
-    });
-    testSelect.addEventListener("input", async () => await drawPattern(testSelect.value))
-}
-
-populateTestSelect()

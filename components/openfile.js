@@ -213,7 +213,6 @@ export function setupOpenFileModal({handleUpload, handlePdrUpload, lockApp, unlo
 
     // top-bar buttons and dialog controls
     gid("open-pdr-dialog").addEventListener("click", () => openDialog("pdr"));
-    gid("open-browser-dialog").addEventListener("click", () => openDialog("browser"));
     gid("browse-files").addEventListener("click", browse);
     dropZone.addEventListener("click", browse);
     gid("close-open-file-modal").addEventListener("click", closeDialog);

@@ -323,7 +323,11 @@ input, select, textarea, button {
     color: white;
     padding: 0;
     border-left: 1px solid #444;
-    overflow: hidden;
+    /* Open panels can add up to more than the window; scroll rather than clip. */
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #555 #333;
     display: flex;
     flex-direction: column;
     gap: 0;
@@ -340,7 +344,7 @@ input, select, textarea, button {
     /*overflow-y: auto;*/
     flex-shrink: 1;
     flex-grow: 1;
-    min-height: 0; /* Allow shrinking */
+    min-height: 8rem; /* Shrinks only this far; beyond that the pane scrolls */
     max-height: 100%;
     transition: all 0.05s ease;
 }
@@ -775,4 +779,279 @@ html {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/* PDR crop / rotate / flip icon strip, under the histogram. Matches the
+   histogram panel: #222 panel, #333 rules, #0af for the active tool. */
+#geometryToolbar {
+    flex-shrink: 0;
+    padding: 0.3rem 0.5rem;
+    background: #222;
+    border-bottom: 1px solid #333;
+    font-size: 0.8rem;
+    color: #ccc;
+}
+
+#geometryToolbar .geometry-buttons {
+    display: flex;
+    gap: 0.25rem;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+#geometryToolbar button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.9rem;
+    height: 1.6rem;
+    padding: 0;
+    background: #444;
+    color: #ddd;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+#geometryToolbar button:hover:not(:disabled) {
+    background: #555;
+}
+
+#geometryToolbar button.active {
+    background: #0af;
+    color: #111;
+}
+
+#geometryToolbar button:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+/* rubber band for the crop tool, in client coordinates */
+#cropSelectOverlay {
+    position: fixed;
+    border: 1px dashed #0af;
+    background: rgba(0, 170, 255, 0.12);
+    pointer-events: none;
+    z-index: 5;
+}
+
+#glitchCanvas.crop-selecting {
+    cursor: crosshair;
+    touch-action: none;
+}
+
+#geom-status {
+    margin-top: 0.25rem;
+    color: #999;
+    white-space: pre-wrap;
+}
+
+#geom-status .warn {
+    color: #fc8;
+}
+
+/* PDS4 label viewer, same look as the histogram panel. */
+#metadataPanel {
+    flex-shrink: 0;
+    padding: 0.25rem 0.5rem 0.4rem;
+    background: #222;
+    border-top: 1px solid #333;
+    border-bottom: 1px solid #333;
+    font-size: 0.8rem;
+}
+
+#metadataPanel[hidden] {
+    display: none;
+}
+
+#metadataPanel > summary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    color: #ccc;
+    padding: 0.15rem 0;
+    list-style: none;
+}
+
+#metadataPanel > summary::-webkit-details-marker {
+    display: none;
+}
+
+#metadataPanel > summary .hist-title::before {
+    content: "▸ ";
+    color: #888;
+}
+
+#metadataPanel[open] > summary .hist-title::before {
+    content: "▾ ";
+}
+
+#metadataPanel > summary .hist-title {
+    font-weight: 700;
+    margin-right: auto;
+}
+
+#metaSearch {
+    font: inherit;
+    font-size: 0.75rem;
+    width: 8rem;
+    min-width: 0;
+    padding: 0.1rem 0.4rem;
+    background: #1a1a1a;
+    color: #ccc;
+    border: 1px solid #333;
+    border-radius: 4px;
+}
+
+#metaSearch:focus {
+    outline: none;
+    border-color: #0af;
+}
+
+#metaStatus {
+    min-height: 1.2em;
+    margin-top: 0.2rem;
+    color: #888;
+}
+
+#metaBody {
+    max-height: min(18rem, 40vh);
+    overflow: auto;
+    margin-top: 0.15rem;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 0.25rem 0.4rem;
+    scrollbar-width: thin;
+    scrollbar-color: #555 #333;
+}
+
+#metaBody details > summary {
+    cursor: pointer;
+    color: #ccc;
+    font-weight: 700;
+    padding: 0.1rem 0;
+}
+
+#metaBody details > div {
+    margin-left: 0.7rem;
+    padding-left: 0.4rem;
+    border-left: 1px solid #333;
+}
+
+#metaBody .meta-row {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.05rem 0;
+    cursor: copy;
+}
+
+#metaBody .meta-row .meta-key {
+    flex: 0 0 45%;
+    color: #888;
+    overflow-wrap: anywhere;
+}
+
+#metaBody .meta-row .meta-val {
+    flex: 1;
+    color: #ddd;
+    overflow-wrap: anywhere;
+}
+
+#metaBody .meta-row .meta-unit {
+    color: #888;
+}
+
+#metaBody .meta-row.copied .meta-val {
+    color: #0af;
+}
+
+#metaBody pre {
+    margin: 0;
+    font-size: 0.72rem;
+    color: #ccc;
+    white-space: pre;
+}
+
+#metaBody .xml-tag {
+    color: #6ab0de;
+}
+
+#metaBody mark {
+    background: #0af;
+    color: #111;
+    border-radius: 2px;
+}
+
+#metaCopy {
+    font: inherit;
+    font-size: 0.7rem;
+    float: right;
+    margin: 0 0 0.2rem 0.4rem;
+    padding: 0.05rem 0.4rem;
+    background: #444;
+    color: #ccc;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+#metaKind {
+    margin-left: 0.4rem;
+    font-weight: 400;
+    font-size: 0.7rem;
+    color: #888;
+}
+
+#metaNav button:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+#metaBody mark.current {
+    background: #fc0;
+    outline: 1px solid #fc0;
+}
+
+/* One section per label / header when a product has several (PDS4 + VICAR,
+   PDS3 + FITS, ...), or when one couldn't be read. */
+#metaBody details.meta-section {
+    border-top: 1px solid #333;
+    padding-top: 0.1rem;
+}
+
+#metaBody details.meta-section:first-child {
+    border-top: none;
+}
+
+#metaBody details.meta-section > summary {
+    color: #0af;
+}
+
+#metaBody .meta-error {
+    color: #fc8;
+    padding: 0.2rem 0;
+    white-space: pre-wrap;
+}
+
+#metaBody .meta-note {
+    color: #888;
+    font-style: italic;
+    padding: 0.2rem 0;
+}
+
+#metaBody .meta-row .meta-comment {
+    color: #777;
+    font-style: italic;
+    flex: 0 1 35%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#metaBody .meta-divider {
+    color: #0af;
 }

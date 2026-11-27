@@ -92,9 +92,11 @@ function requirePdrInterfaceInit() {
     }
 }
 
-export async function getArrayImage(path, objname, band) {
+// geometry: optional JSON string of pdrview.Geometry fields
+export async function getArrayImage(path, objname, band, geometry = null) {
     requirePdrInterfaceInit();
-    const arrayData = await py.fns.get_array_image(path, objname, band);
+    // never pass JS null: Pyodide hands it to Python as jsnull, not None
+    const arrayData = await py.fns.get_array_image(path, objname, band, geometry ?? "");
     if (!arrayData.ok) {
         throw new Error(arrayData.error);
     }
@@ -119,10 +121,25 @@ export async function getProductInfo(path) {
     return JSON.parse(result.objects);
 }
 
+// The product's labels and headers for the metadata pane:
+// {sections: [{kind, title, tree, raw, error}, ...]}, or null when it has
+// none (pdrview.get_product_label).
+export async function getProductLabel(path) {
+    requirePdrInterfaceInit();
+    const result = await py.fns.get_product_label(path);
+    if (!result.ok) {
+        throw new Error(result.error);
+    }
+    const sections = JSON.parse(result.sections);
+    return sections.length ? {sections} : null;
+}
+
 export async function setUpInterface() {
     const pyodide = await getPyodide();
 
-    const names = ["get_array_image", "get_product_info", "flush_cache"];
+    const names = [
+        "get_array_image", "get_product_info", "get_product_label", "flush_cache"
+    ];
 
     for (const name of names) {
         const fn = pyodide.globals.get(name);

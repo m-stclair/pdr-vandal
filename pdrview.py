@@ -1,11 +1,18 @@
 import dataclasses
 import json
+import os
+import re
 from typing import Literal, OrderedDict
 
 import multidict
 import numpy as np
 import pdr
+from pyodide import ffi as _ffi
 from pyodide.ffi import to_js
+
+# A JS null argument arrives in Python as pyodide.ffi.jsnull (Pyodide 0.28+),
+# not None; only undefined becomes None.
+jsnull = getattr(_ffi, "jsnull", None)
 
 
 def to_js_unproxied(*args, **kwargs):
@@ -85,9 +92,113 @@ class PixelCache:
 PIXEL_CACHE = PixelCache(max_bytes=2 * 1024 ** 3)
 
 # Cache key conventions:
-#   (path, objname, band)  -> scaled pixel arrays for one band or RGB triplet
-#   (path, objname, None)  -> masked/scaled source array before flattening
-CacheKey = tuple[str, str, int | str | None]
+#   (path, objname, band, geometry) -> scaled pixel arrays for one band or RGB
+#                                      triplet after a Geometry transform
+#   (path, objname, None)           -> masked/scaled source array before
+#                                      band selection and flattening
+CacheKey = tuple
+
+
+@dataclasses.dataclass(frozen=True)
+class Geometry:
+    """
+    Lossless or value-preserving array geometry applied to a band (or RGB
+    stack) before scaling, in this order:
+      1. crop to columns x0:x0+width, rows y0:y0+height (original pixels;
+         row 0 is the first row pdr returns)
+      2. rebin by integer factor `bin`: mean of each bin x bin block,
+         ignoring masked / non-finite pixels; a block with no valid pixels
+         is masked. A partial block at the right / bottom edge is dropped.
+      3. flip left-right, if `flip`
+      4. rotate `rot` quarter turns clockwise (as displayed)
+    Statistics and scale / offset are computed on the result, so every
+    clip mode works on the transformed array.
+
+    Frozen (hashable) so it can be part of cache keys. width / height of
+    None mean "to the edge".
+    """
+    x0: int = 0
+    y0: int = 0
+    width: int | None = None
+    height: int | None = None
+    bin: int = 1
+    flip: bool = False
+    rot: int = 0
+
+    def resolved(self, h: int, w: int) -> "Geometry":
+        """Clamp the crop box to an h x w array and fill in to-the-edge
+        sizes, so equivalent requests share one cache key."""
+        x0 = min(max(int(self.x0), 0), w - 1)
+        y0 = min(max(int(self.y0), 0), h - 1)
+        cw = w - x0 if self.width is None else min(max(int(self.width), 1), w - x0)
+        ch = h - y0 if self.height is None else min(max(int(self.height), 1), h - y0)
+        b = max(int(self.bin), 1)
+        b = min(b, cw, ch)
+        return Geometry(x0, y0, cw, ch, b, bool(self.flip), int(self.rot) % 4)
+
+    @property
+    def is_identity(self) -> bool:
+        return self.bin == 1 and not self.flip and self.rot == 0
+
+    def output_shape(self) -> tuple[int, int]:
+        """(height, width) of the result; requires a resolved Geometry."""
+        h, w = self.height // self.bin, self.width // self.bin
+        return (w, h) if self.rot % 2 else (h, w)
+
+
+def parse_geometry(spec) -> Geometry | None:
+    """
+    Geometry from a JSON string or dict with any of the Geometry fields;
+    None / JS null / "" / "null" mean no transform.
+    """
+    if spec is None or (jsnull is not None and spec is jsnull):
+        return None
+    if isinstance(spec, str):
+        if spec.strip() in ("", "null"):
+            return None
+        spec = json.loads(spec)
+    if not isinstance(spec, dict):
+        raise TypeError(f"geometry must be an object, not {type(spec).__name__}")
+    fields = {f.name for f in dataclasses.fields(Geometry)}
+    unknown = set(spec) - fields
+    if unknown:
+        raise ValueError(f"unknown geometry fields: {sorted(unknown)}")
+    return Geometry(**{k: v for k, v in spec.items() if v is not None})
+
+
+def rebin_mean(arr: np.ndarray, b: int) -> np.ma.MaskedArray:
+    """
+    Mean over b x b blocks of the last two axes, ignoring masked and
+    non-finite pixels. Trailing rows / columns that don't fill a block are
+    dropped. A block with no valid pixels is masked.
+    """
+    if b == 1:
+        return np.ma.masked_invalid(arr)
+    h, w = arr.shape[-2] // b * b, arr.shape[-1] // b * b
+    arr = np.ma.masked_invalid(arr[..., :h, :w])
+    lead = arr.shape[:-2]
+    blocks = arr.reshape(*lead, h // b, b, w // b, b)
+    # float64 accumulation: block sums of float32 data lose precision
+    return blocks.astype('f8').mean(axis=(-3, -1))
+
+
+def apply_geometry(arr: np.ndarray, geom: Geometry | None) -> np.ndarray:
+    """
+    Apply a resolved Geometry to a (H, W) or (bands, H, W) array, which may
+    be masked. See Geometry for the order of operations.
+    """
+    if geom is None:
+        return arr
+    out = arr[..., geom.y0:geom.y0 + geom.height, geom.x0:geom.x0 + geom.width]
+    if geom.bin > 1:
+        out = rebin_mean(out, geom.bin)
+    if geom.flip:
+        out = out[..., :, ::-1]
+    if geom.rot:
+        # np.rot90 turns counterclockwise from axis -2 toward -1, so a
+        # negative k is clockwise as displayed (row 0 at the top)
+        out = np.rot90(out, -geom.rot, axes=(-2, -1))
+    return out
 
 
 @dataclasses.dataclass
@@ -124,6 +235,9 @@ class BandPixels:
     p98: float
     zmin: float
     zmax: float
+    # dimensions of the (possibly Geometry-transformed) array
+    height: int = 0
+    width: int = 0
 
 
 @dataclasses.dataclass
@@ -131,11 +245,11 @@ class ArrayObject:
     """
     Representation of a displayable array-bearing object in a product.
 
-    `band_pixels` caches per-band display metadata, not the pixel
+    `band_pixels` caches per-(band, geometry) display metadata, not the pixel
     arrays themselves. They are independently stored in, and may be
     independently evicted from, PIXEL_CACHE.
     """
-    band_pixels: dict[str | int, BandPixels]
+    band_pixels: dict[tuple, BandPixels]
     info: ArrayInfo
     name: str
 
@@ -598,7 +712,8 @@ def _scale_and_cache(
     band: int | Literal["RGB"],
     pixels: np.ndarray,
     raw_stats: dict,
-    cache: PixelCache = PIXEL_CACHE
+    cache: PixelCache = PIXEL_CACHE,
+    geom: Geometry | None = None,
 ) -> tuple[BandPixels, np.ndarray]:
     """
     Normalize one band (or an RGB 3-band stack) into float32 0-1 display space,
@@ -634,7 +749,7 @@ def _scale_and_cache(
         scaled = scaled.ravel()
         channels = 1
 
-    band_key = (entry.data.filename, obj.name, band)
+    band_key = (entry.data.filename, obj.name, band, geom)
     cache.put(band_key, scaled)
 
     bandpixels = BandPixels(
@@ -646,9 +761,11 @@ def _scale_and_cache(
         p98=rescale(raw_stats['p98']),
         zmin=rescale(raw_stats['zmin']),
         zmax=rescale(raw_stats['zmax']),
-        channels=channels
+        channels=channels,
+        height=int(pixels.shape[-2]),
+        width=int(pixels.shape[-1]),
     )
-    obj.band_pixels[band] = bandpixels
+    obj.band_pixels[(band, geom)] = bandpixels
     return bandpixels, scaled
 
 
@@ -710,6 +827,7 @@ def _rescale_and_cache(
     arr: np.ndarray,
     bandpixels: BandPixels,
     cache: PixelCache = PIXEL_CACHE,
+    geom: Geometry | None = None,
 ) -> tuple[BandPixels, np.ndarray]:
     """
     Rebuild scaled pixels from surviving BandPixels metadata after the pixel
@@ -722,8 +840,22 @@ def _rescale_and_cache(
         scaled[scaled.mask] = np.nan
         scaled = scaled.data
     scaled = bsq_to_bip_1d(scaled) if not isinstance(band, int) else scaled.ravel()
-    cache.put((entry.data.filename, obj.name, band), scaled)
+    cache.put((entry.data.filename, obj.name, band, geom), scaled)
     return bandpixels, scaled
+
+
+def _resolve_geometry(obj: ArrayObject, geometry: Geometry | None) -> Geometry | None:
+    """
+    Canonical form of a requested Geometry for an object, used as the cache
+    key component: clamped to the object's dimensions, or None when it
+    changes nothing (so it shares the untransformed cache entries).
+    """
+    if geometry is None:
+        return None
+    geom = geometry.resolved(obj.info.height, obj.info.width)
+    if geom == Geometry(0, 0, obj.info.width, obj.info.height):
+        return None
+    return geom
 
 
 def get_scaled_rgba_bip(
@@ -731,9 +863,11 @@ def get_scaled_rgba_bip(
     objname: str,
     band: str | int | None = None,
     cache: PixelCache = PIXEL_CACHE,
+    geometry: Geometry | None = None,
 ) -> tuple[BandPixels, np.ndarray]:
     """
-    Main accessor for a display-ready pixel payload.
+    Main accessor for a display-ready pixel payload, optionally after a
+    Geometry transform (crop / rebin / flip / rotate).
 
     Flow:
       1. Validate that the named object exists and is renderable.
@@ -751,22 +885,23 @@ def get_scaled_rgba_bip(
         raise TypeError(f"{objname} is not an array")
 
     band = _resolve_band(obj, band)
-    band_key = (entry.data.filename, obj.name, band)
-    bandpixels = obj.band_pixels.get(band)
+    geom = _resolve_geometry(obj, geometry)
+    band_key = (entry.data.filename, obj.name, band, geom)
+    bandpixels = obj.band_pixels.get((band, geom))
     cached_pixels = cache.get(band_key)
 
     if bandpixels is not None and cached_pixels is not None:
         return bandpixels, cached_pixels
 
     masked = _get_or_reload_masked(entry, objname, cache)
-    arr = _arr_for_band(masked, band, obj)
+    arr = apply_geometry(_arr_for_band(masked, band, obj), geom)
 
     if bandpixels is not None:
         # stats are alive on bandpixels, pixels were just evicted
-        return _rescale_and_cache(entry, obj, band, arr, bandpixels, cache)
+        return _rescale_and_cache(entry, obj, band, arr, bandpixels, cache, geom)
 
     raw_stats = _compute_stats(arr)
-    return _scale_and_cache(entry, obj, band, arr, raw_stats, cache)
+    return _scale_and_cache(entry, obj, band, arr, raw_stats, cache, geom)
 
 
 def to_json_safe(meta: dict | multidict.MultiDict):
@@ -797,7 +932,8 @@ def to_json_safe(meta: dict | multidict.MultiDict):
 def get_array_image(
     path: str,
     objname: str | None = None,
-    band: str | int | None = None
+    band: str | int | None = None,
+    geometry: str | None = None,
 ) -> object:
     """
     Public JS-facing helper to fetch one displayable array payload.
@@ -808,20 +944,30 @@ def get_array_image(
       - scaling metadata
       - dimensions and channel count
       - summary statistics in normalized space
+      - the resolved geometry actually applied, as a JSON string (null
+        for none)
+
+    `geometry` is an optional JSON string of Geometry fields.
    """
     try:
         result = load_if_required(path)
         if not result.ok:
             raise ValueError(f"Failed to load {path}: {result.error}")
-        bandpixels, arr = get_scaled_rgba_bip(result, objname, band)
-        info = result.entry.objects[objname].info
+        geometry = parse_geometry(geometry)
+        bandpixels, arr = get_scaled_rgba_bip(
+            result, objname, band, geometry=geometry
+        )
+        obj = result.entry.objects[objname]
+        geom = _resolve_geometry(obj, geometry)
         return to_js_unproxied({
             "ok": True,
             "pixels": arr,
             "scale": float(bandpixels.scale),
             "offset": float(bandpixels.offset),
-            "width": int(info.width),
-            "height": int(info.height),
+            "width": int(bandpixels.width),
+            "height": int(bandpixels.height),
+            # JSON string (or null), like get_product_info's objects
+            "geometry": None if geom is None else json.dumps(dataclasses.asdict(geom)),
             "channels": int(bandpixels.channels),
             "mean": float(bandpixels.mean),
             "std": float(bandpixels.std),
@@ -856,6 +1002,481 @@ def get_product_info(path: str) -> object:
             continue
         out[objname] = dataclasses.asdict(obj.info)
     return to_js_unproxied({"ok": True, "objects": json.dumps(out)})
+
+
+def _label_tag(tag: str, nsmap: dict) -> str:
+    """Turn an ElementTree '{uri}name' tag into 'prefix:name'."""
+    if not tag.startswith("{"):
+        return tag
+    uri, name = tag[1:].split("}", 1)
+    prefix = nsmap.get(uri, "")
+    return f"{prefix}:{name}" if prefix else name
+
+
+def label_to_tree(element, nsmap: dict) -> dict:
+    """
+    Convert a parsed PDS4 label element (from pdr's Label) into nested
+    {key, value?, unit?, children?} nodes. Unlike data.metadata, this keeps
+    repeated keys, document order, and the `unit` attribute.
+    """
+    node = {"key": _label_tag(element.tag, nsmap)}
+    children = [label_to_tree(c, nsmap) for c in element if isinstance(c.tag, str)]
+    if children:
+        node["children"] = children
+        return node
+    text = (element.text or "").strip()
+    if text:
+        node["value"] = text
+    unit = element.attrib.get("unit")
+    if unit:
+        node["unit"] = unit
+    return node
+
+
+def _pvl_leaf(value) -> tuple[str, str | None]:
+    """Format a PDS3 leaf value as (text, unit). Quantities are
+    {'value', 'units'} dicts; tuples of them share a unit when possible."""
+    if isinstance(value, dict) and "value" in value:
+        return str(value["value"]), value.get("units")
+    if isinstance(value, (tuple, list)):
+        parts = [_pvl_leaf(v) for v in value]
+        units = {u for _, u in parts if u}
+        if len(units) == 1 and all(u for _, u in parts):
+            return "(" + ", ".join(t for t, _ in parts) + ")", units.pop()
+        return "(" + ", ".join(
+            f"{t} {u}" if u else t for t, u in parts
+        ) + ")", None
+    return str(value), None
+
+
+def _leaf_node(key: str, value) -> dict:
+    text, unit = _pvl_leaf(value)
+    node = {"key": key, "value": text}
+    if unit:
+        node["unit"] = unit
+    return node
+
+
+def pds3_to_tree(block, key: str) -> dict:
+    """
+    Convert a PDS3 label block (a MultiDict from pdr) into nested
+    {key, value?, unit?, children?} nodes, keeping duplicates and order.
+    A `K_NAME` array next to an equal-length `K` array is shown as one
+    group `K` with a child per element, keyed by name.
+    """
+    paired = {
+        k[:-5] for k, v in block.items()
+        if k.endswith("_NAME") and isinstance(v, (tuple, list))
+        and isinstance(block.get(k[:-5]), (tuple, list))
+        and len(block[k[:-5]]) == len(v)
+    }
+    children = []
+    for k, v in block.items():
+        if k.endswith("_NAME") and k[:-5] in paired:
+            continue
+        if isinstance(v, multidict.MultiDict):
+            children.append(pds3_to_tree(v, k))
+        elif k in paired:
+            names = block[k + "_NAME"]
+            children.append({
+                "key": k,
+                "children": [_leaf_node(str(n), x) for n, x in zip(names, v)],
+            })
+        else:
+            children.append(_leaf_node(k, v))
+    return {"key": key, "children": children}
+
+
+# --- Label / header sections for the metadata pane ---------------------------
+# A product can carry several labels and headers: a PDS4 or PDS3 label, an
+# embedded VICAR header, FITS headers in its data file, TIFF tags, ... Each
+# becomes one section {kind, title, tree, raw, error} for the pane; a section
+# that fails to parse keeps its error (and its raw text, when that was
+# readable) instead of hiding the others. A {note} entry is an aside for the
+# pane, not a section.
+
+# Data files a label points to that get sniffed for embedded headers.
+LABEL_FILE_SNIFF_LIMIT = 20
+# Byte values longer than this (TIFF MakerNote, ICC profiles) are elided.
+ELIDE_BYTES_OVER = 256
+# Refuse VICAR label sizes beyond this; a corrupt LBLSIZE shouldn't make us
+# read the whole file.
+VICAR_MAX_LABEL_BYTES = 8 * 1024 * 1024
+
+
+def _section(kind, title, tree=None, raw=None, error=None) -> dict:
+    return {"kind": kind, "title": title, "tree": tree, "raw": raw, "error": error}
+
+
+def _error_text(e: Exception) -> str:
+    return f"{type(e).__name__}: {e}"
+
+
+def _clean_raw(text: str) -> str:
+    """Normalize line ends, drop trailing blanks and NUL padding."""
+    text = text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(line.rstrip() for line in text.split("\n")).strip("\n") + "\n"
+
+
+def _scalar_text(value) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        if len(value) > ELIDE_BYTES_OVER:
+            return f"<{len(value)} bytes>"
+        text = bytes(value).decode("latin-1")
+        if all(c.isprintable() or c in "\t\n" for c in text.rstrip("\x00")):
+            return text.rstrip("\x00")
+        return bytes(value).hex(" ")
+    if isinstance(value, (tuple, list)):
+        return "(" + ", ".join(_scalar_text(v) for v in value) + ")"
+    if isinstance(value, np.generic):
+        return str(value.item())
+    return str(value)
+
+
+def mapping_to_tree(key: str, mapping, skip=()) -> dict:
+    """Generic nested mapping (e.g. PIL image info / tags) -> pane tree."""
+    children = []
+    for k, v in mapping.items():
+        if k in skip:
+            continue
+        if hasattr(v, "items") and callable(v.items):
+            children.append(mapping_to_tree(str(k), v))
+        else:
+            children.append({"key": str(k), "value": _scalar_text(v)})
+    return {"key": key, "children": children}
+
+
+# --- FITS ---
+
+def _fits_card_node(card) -> dict | None:
+    try:
+        key, value, comment = card.keyword, card.value, card.comment
+    except Exception:
+        # astropy refuses some illegal cards; show them verbatim
+        return {"key": card.keyword or "?", "value": card.image.rstrip(),
+                "comment": "unparseable card"}
+    if not key and not str(value).strip():
+        return None   # blank padding card
+    if isinstance(value, bool):
+        text = "T" if value else "F"
+    elif type(value).__name__ == "Undefined":
+        text = ""
+    else:
+        text = str(value)
+    node = {"key": key or "(blank)", "value": text}
+    if comment:
+        node["comment"] = str(comment)
+    return node
+
+
+def fits_section(hdulist, title: str) -> dict:
+    """All HDU headers of an open astropy HDUList as one FITS section."""
+    children, raws = [], []
+    for i, hdu in enumerate(hdulist):
+        header = hdu.header
+        name = f"HDU {i}" + (f" ({hdu.name})" if hdu.name else "")
+        cards = [n for n in (_fits_card_node(c) for c in header.cards) if n]
+        children.append({"key": name, "children": cards})
+        try:
+            text = header.tostring(sep="\n", endcard=True, padding=False)
+        except Exception as e:
+            text = f"(header text unavailable: {_error_text(e)})"
+        raws.append(f"--- {name} ---\n" + text.rstrip())
+    return _section("FITS", title, {"key": title, "children": children},
+                    _clean_raw("\n".join(raws)))
+
+
+def _fits_file_section(path: str, title: str) -> dict:
+    from astropy.io import fits
+
+    with fits.open(path, lazy_load_hdus=True, ignore_missing_simple=True) as hdulist:
+        return fits_section(hdulist, title)
+
+
+# --- VICAR ---
+
+_VICAR_ITEM = re.compile(
+    r"([A-Za-z0-9_]+)\s*=\s*"
+    r"('(?:[^']|'')*'"                              # 'quoted, '' escapes'
+    r"|\((?:[^()']|'(?:[^']|'')*')*\)"              # (a, 'b', c)
+    r"|[^\s']+)"                                    # bare number / word
+)
+_VICAR_LIST_ITEM = re.compile(r"'(?:[^']|'')*'|[^,\s]+")
+
+
+def _vicar_value(text: str) -> str:
+    text = text.strip()
+    if text.startswith("'"):
+        return text[1:-1].replace("''", "'")
+    if text.startswith("("):
+        return "(" + ", ".join(
+            _vicar_value(v) for v in _VICAR_LIST_ITEM.findall(text[1:-1])
+        ) + ")"
+    return text
+
+
+def parse_vicar_text(text: str):
+    """
+    Parse VICAR label text into pane groups and display lines.
+    Items before the first PROPERTY / TASK are the system label; each
+    PROPERTY='X' and TASK='Y' item starts a group of its own.
+    Returns (groups, items, lines): groups are pane tree nodes, `items` the
+    system label as {KEY: value text}, `lines` the raw text one item a line.
+    """
+    text = text.replace("\x00", " ")
+    groups = [{"key": "System", "children": []}]
+    system, lines = {}, []
+    matched = 0
+    for m in _VICAR_ITEM.finditer(text):
+        key, raw_value = m.group(1), m.group(2)
+        value = _vicar_value(raw_value)
+        if key in ("PROPERTY", "TASK"):
+            groups.append({"key": f"{key} {value}", "children": []})
+            lines.append("")
+        elif len(groups) == 1:
+            system.setdefault(key, value)
+        groups[-1]["children"].append({"key": key, "value": value})
+        lines.append(f"{key}={raw_value}")
+        matched += 1
+    if not matched or groups[0]["children"][:1] == [] or \
+            groups[0]["children"][0]["key"] != "LBLSIZE":
+        raise ValueError("not a VICAR label (no leading LBLSIZE item)")
+    return groups, system, lines
+
+
+def _read_vicar_label(f, offset: int) -> str:
+    f.seek(offset)
+    head = f.read(64).decode("latin-1")
+    m = re.match(r"\s*LBLSIZE\s*=\s*(\d+)", head)
+    if not m:
+        raise ValueError(f"no LBLSIZE at byte {offset}")
+    size = int(m.group(1))
+    if not 0 < size <= VICAR_MAX_LABEL_BYTES:
+        raise ValueError(f"implausible LBLSIZE {size}")
+    f.seek(offset)
+    return f.read(size).decode("latin-1")
+
+
+def vicar_section(path: str, title: str, offset: int = 0) -> dict:
+    """The VICAR label at `offset` in `path`, plus its end-of-file label."""
+    raw = None
+    try:
+        with open(path, "rb") as f:
+            text = _read_vicar_label(f, offset)
+            raw = text
+            groups, system, lines = parse_vicar_text(text)
+            if system.get("EOL", "0").strip() == "1":
+                as_int = lambda k: int(system.get(k, "0"))
+                eol_at = (offset + as_int("LBLSIZE")
+                          + (as_int("NLB") + as_int("N2") * as_int("N3")) * as_int("RECSIZE"))
+                eol_text = _read_vicar_label(f, eol_at)
+                eol_groups, _, eol_lines = parse_vicar_text(eol_text)
+                for g in eol_groups:
+                    g["key"] = f"EOL {g['key']}"
+                groups += eol_groups
+                lines += ["", "--- EOL label ---"] + eol_lines
+        return _section("VICAR", title, {"key": title, "children": groups},
+                        _clean_raw("\n".join(lines)))
+    except Exception as e:
+        return _section("VICAR", title, raw=_clean_raw(raw) if raw else None,
+                        error=_error_text(e))
+
+
+# --- PDS3 / PDS4 ---
+
+def _pds3_raw(labelname: str) -> str:
+    from pdr.parselabel.pds3 import trim_label
+
+    return _clean_raw(trim_label(labelname, strict_decode=False, raise_no_ending=True))
+
+
+def _pds3_section(metadata, labelname: str, title: str) -> dict | None:
+    """A PDS3 label section, or None when the file has no PVL label at all."""
+    raw = error = tree = None
+    try:
+        raw = _pds3_raw(labelname)
+    except Exception as e:
+        error = e
+    if not len(metadata):
+        return None   # nothing parsed: not a PDS3 product (e.g. plain text)
+    try:
+        tree = pds3_to_tree(metadata, title)
+    except Exception as e:
+        error = e
+    return _section("PDS3", title, tree, raw,
+                    _error_text(error) if error and tree is None else None)
+
+
+def _pds4_section(data) -> dict:
+    title = os.path.basename(data.labelname)
+    raw = tree = None
+    try:
+        with open(data.labelname, encoding="utf-8", errors="replace") as f:
+            raw = f.read()
+        label = data.label
+        tree = label_to_tree(label.getroot(), label.get_namespace_map())
+        return _section("PDS4", title, tree, raw)
+    except Exception as e:
+        return _section("PDS4", title, tree, raw, _error_text(e))
+
+
+# --- the product's files ---
+
+def _resolve_in_dir(directory: str, name: str) -> str | None:
+    """`name` in `directory`, matched case-insensitively (PDS3 pointers often
+    differ in case from the delivered filenames)."""
+    exact = os.path.join(directory, name)
+    if os.path.exists(exact):
+        return exact
+    try:
+        for entry in os.listdir(directory or "."):
+            if entry.lower() == name.lower():
+                return os.path.join(directory, entry)
+    except OSError:
+        pass
+    return None
+
+
+def _product_files(data) -> list[str]:
+    """Data files the product's label names, other than the label itself."""
+    labelname = data.labelname or data.filename
+    directory = os.path.dirname(labelname)
+    names = []
+    if data.standard == "PDS4":
+        for el in data.label.getroot().iter():
+            if isinstance(el.tag, str) and el.tag.rsplit("}", 1)[-1] == "file_name" and el.text:
+                names.append(el.text.strip())
+    elif data.standard == "PDS3":
+        for key, value in data.metadata.items():
+            if not str(key).startswith("^"):
+                continue
+            target = value[0] if isinstance(value, (tuple, list)) and value else value
+            if isinstance(target, str):
+                names.append(target)
+    files = []
+    for name in names:
+        path = _resolve_in_dir(directory, os.path.basename(name))
+        if path and os.path.abspath(path) != os.path.abspath(labelname) and path not in files:
+            files.append(path)
+    if data.filename and os.path.abspath(data.filename) != os.path.abspath(labelname) \
+            and data.filename not in files:
+        files.insert(0, data.filename)
+    return files
+
+
+def _sniff_file(path: str, primary: str) -> dict | None:
+    """A section for the header a data file starts with, or None."""
+    with open(path, "rb") as f:
+        head = f.read(16)
+    name = os.path.basename(path)
+    try:
+        if head.startswith(b"LBLSIZE="):
+            return vicar_section(path, f"header in {name}")
+        if head.startswith(b"SIMPLE  ="):
+            return _fits_file_section(path, name)
+        if head[:4] in (b"II*\x00", b"MM\x00*"):
+            from pdr.pil_utils import skim_image_data
+
+            return _section("TIFF", name, mapping_to_tree(name, skim_image_data(path), skip=("fn",)))
+        if primary == "PDS4" and head.startswith((b"PDS_VERSION_ID", b"ODL_VERSION_ID")):
+            from pdr.parselabel.pds3 import read_pvl
+            from pdr.pdr import Metadata
+
+            return _pds3_section(Metadata(read_pvl(path)), path, f"label in {name}")
+    except Exception as e:
+        kind = ("VICAR" if head.startswith(b"LBLSIZE=") else "FITS" if head.startswith(b"SIMPLE")
+                else "TIFF" if head[:2] in (b"II", b"MM") else "PDS3")
+        return _section(kind, name, error=_error_text(e))
+    return None
+
+
+def _pds3_vicar_headers(data) -> tuple[list[dict], set[str]]:
+    """VICAR headers a PDS3 label declares as *_HEADER objects, and the files
+    they were read from (so file sniffing doesn't show them again)."""
+    out, files = [], set()
+    for key, block in data.metadata.items():
+        if not (str(key).endswith("HEADER") and hasattr(block, "get")):
+            continue
+        if "VICAR" not in str(block.get("HEADER_TYPE", "")).upper():
+            continue
+        title = f"{key} in {os.path.basename(data.labelname)}"
+        try:
+            text = data[key]
+            if key in data.file_mapping:
+                files.add(os.path.abspath(data.file_mapping[key]))
+            if not isinstance(text, str):
+                raise ValueError(f"pdr read {key} as {type(text).__name__}, not text")
+            groups, _, lines = parse_vicar_text(text)
+            out.append(_section("VICAR", title, {"key": title, "children": groups},
+                                _clean_raw("\n".join(lines))))
+        except Exception as e:
+            out.append(_section("VICAR", title, error=_error_text(e)))
+    return out, files
+
+
+def label_sections(data) -> list[dict]:
+    """Every label / header section of a loaded pdr Data object."""
+    sections = []
+    vicar_files = set()
+    standard = data.standard
+    if standard == "PDS4":
+        sections.append(_pds4_section(data))
+    elif standard == "PDS3":
+        section = _pds3_section(data.metadata, data.labelname, os.path.basename(data.labelname))
+        if section:
+            sections.append(section)
+            headers, vicar_files = _pds3_vicar_headers(data)
+            sections += headers
+    elif standard == "FITS":
+        try:
+            sections.append(fits_section(data._hdulist, os.path.basename(data.filename)))
+        except Exception as e:
+            sections.append(_section("FITS", os.path.basename(data.filename), error=_error_text(e)))
+    else:
+        # desktop image formats (TIFF, JPEG, PNG, ...): pdr's PIL metadata
+        name = os.path.basename(data.filename)
+        try:
+            sections.append(_section(str(standard), name,
+                                     mapping_to_tree(name, data.metadata, skip=("fn",))))
+        except Exception as e:
+            sections.append(_section(str(standard), name, error=_error_text(e)))
+        return sections
+    if standard in ("PDS3", "PDS4") and sections:
+        files = _product_files(data)
+        for path in files[:LABEL_FILE_SNIFF_LIMIT]:
+            if os.path.abspath(path) in vicar_files:
+                continue   # its VICAR header is already a section
+            try:
+                section = _sniff_file(path, standard)
+            except OSError:
+                continue   # missing / unreadable data file: nothing to show
+            if section:
+                sections.append(section)
+        if len(files) > LABEL_FILE_SNIFF_LIMIT:
+            n = len(files) - LABEL_FILE_SNIFF_LIMIT
+            sections.append({"note": (
+                f"{n} more data file{'s' if n > 1 else ''} not inspected for headers."
+            )})
+    return sections
+
+
+def get_product_label(path: str) -> object:
+    """
+    Public JS-facing helper: every label / header section of a product, for
+    the metadata pane.
+
+    Output shape:
+      { ok: True, sections: "<json list of {kind, title, tree, raw, error}>" }
+    An empty list means the product has no label or header to show.
+    """
+    try:
+        result = load_if_required(path)
+        if not result.ok:
+            raise result.error
+        sections = label_sections(result.entry.data)
+        return to_js_unproxied({"ok": True, "sections": json.dumps(sections)})
+    except Exception as e:
+        return to_js_unproxied({"ok": False, "error": _error_text(e)})
 
 
 def bsq_to_bip_1d(bsq: np.ndarray) -> np.ndarray:

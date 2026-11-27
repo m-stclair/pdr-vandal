@@ -41,9 +41,12 @@ class PanInterface {
         this.lastPointerX = null;
         this.lastPointerY = null;
         this.isDragging = false;
+        // false while another tool (crop selection) owns canvas drags
+        this.enabled = true;
     }
 
     onPointerDown = (e) => {
+        if (!this.enabled) return;
         this.isDragging = true;
         this.lastPointerX = e.clientX;
         this.lastPointerY = e.clientY;
@@ -70,7 +73,7 @@ class PanInterface {
     };
 }
 
-const panInterface = new PanInterface(appRenderer);
+export const panInterface = new PanInterface(appRenderer);
 
 canvas.addEventListener("pointerdown", panInterface.onPointerDown);
 canvas.addEventListener("pointermove", panInterface.onPointerMove);

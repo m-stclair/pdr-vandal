@@ -200,9 +200,9 @@ function getFilenameStem(filename) {
   return filename.slice(0, lastDot);
 }
 
-export function vandalStamp(originalName, ext) {
+export function vandalStamp(originalName, ext, tag = "") {
     const date = new Date();
     const stem = getFilenameStem(originalName);
     const timestamp = date.toISOString().replace(/[^0-9]/g, '');
-    return `${stem}_pdrview_${timestamp}.${ext}`
+    return `${stem}${tag ? `_${tag}` : ""}_pdrview_${timestamp}.${ext}`
 }
