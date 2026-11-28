@@ -2,5 +2,5 @@
 pytest>=8
 playwright>=1.40
 numpy>=1.26,<2.5  # marslab 0.9.28's DCS needs real-valued np.linalg.eig (2.5+ returns complex)
-pdr>=1.4      # imported by pdrview.py
+pdr[pillow,fits]>=1.4  # imported by pdrview.py; extras provide Pillow (TIFF tests) and Astropy (FITS tests)
 multidict     # imported by pdrview.py
