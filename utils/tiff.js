@@ -16,8 +16,9 @@ const TYPE_SIZES = {ASCII: 1, SHORT: 2, LONG: 4};
 export function analyzeChannels(pixels, sourceBands) {
     let gray = sourceBands === 1;
     let alpha = false;
+    const normalized = v => v > 0 ? Math.min(v, 1) : 0;
     for (let i = 0; i < pixels.length; i += 4) {
-        if (gray && (pixels[i] !== pixels[i + 1] || pixels[i] !== pixels[i + 2])) {
+        if (gray && (normalized(pixels[i]) !== normalized(pixels[i + 1]) || normalized(pixels[i]) !== normalized(pixels[i + 2]))) {
             gray = false;
         }
         if (!(pixels[i + 3] >= 1)) alpha = true;

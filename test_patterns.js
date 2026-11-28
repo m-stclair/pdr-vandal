@@ -196,7 +196,8 @@ export function floatArrayData(pixels, width, height) {
         n++;
     }
     const mean = n ? sum / n : 0;
-    const [p02, p98] = approxPercentiles(pixels, 2, 98);
+    const finite = n === pixels.length ? pixels : pixels.filter(Number.isFinite);
+    const [p02, p98] = n ? approxPercentiles(finite, 2, 98) : [0, 1];
     return {
         pixels, width, height, channels: 1, scale: 1, offset: 0,
         mean, std: n ? Math.sqrt(Math.max(0, sum2 / n - mean * mean)) : 0, p02, p98,
