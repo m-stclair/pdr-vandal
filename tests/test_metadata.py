@@ -318,3 +318,29 @@ def test_sidebar_has_no_scrollbar_when_everything_fits(app):
     app.page.set_viewport_size({"width": 1280, "height": 1400})
     app.js("(await import('/glitch.js')).metadataPanel.clear(); return null;")
     assert app.js(OVERFLOW)["overflows"] is False
+
+
+ENTITY = {"kind": "pds4", "tree": None, "raw": "<Product>\n  <title>Moon & test</title>\n</Product>\n"}
+PRE = "return document.querySelector('#metaBody pre')."
+
+
+def _raw_search(app, query):
+    app.js(SET, ENTITY)
+    app.js(RAW_MODE)
+    before = app.js(PRE + "innerText")
+    app.js(QUERY, query)
+    return before, app.js(PRE + "innerText"), app.js("return [...document.querySelectorAll('#metaBody pre mark')].map(m => m.textContent)")
+
+
+def test_raw_search_does_not_match_generated_entities(app):
+    before, after, marks = _raw_search(app, "lt")
+    assert marks == [] and after == before
+    _, _, marks = _raw_search(app, "amp")
+    assert marks == []
+
+
+def test_raw_search_marks_decoded_text_and_keeps_display(app):
+    before, after, marks = _raw_search(app, "<")
+    assert marks == ["<"] * before.count("<") and after == before
+    before, after, marks = _raw_search(app, "&")
+    assert marks == ["&"] and after == before

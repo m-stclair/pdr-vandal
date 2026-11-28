@@ -6,22 +6,40 @@ const SEARCH_DEBOUNCE_MS = 120;
 
 const escapeHTML = s => s.replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
 
+// `text` as a fragment with each (lower-cased) `query` hit wrapped in <mark>.
+function markFragment(text, query) {
+    const frag = document.createDocumentFragment();
+    const lower = text.toLowerCase();
+    let at = 0;
+    for (let i = lower.indexOf(query); i !== -1; i = lower.indexOf(query, at)) {
+        frag.append(text.slice(at, i));
+        const mark = document.createElement("mark");
+        mark.textContent = text.slice(i, i + query.length);
+        frag.append(mark);
+        at = i + query.length;
+    }
+    frag.append(text.slice(at));
+    return frag;
+}
+
 function markText(el, text, query) {
     el.textContent = "";
     if (!query) {
         el.textContent = text;
         return;
     }
-    const lower = text.toLowerCase();
-    let at = 0;
-    for (let i = lower.indexOf(query); i !== -1; i = lower.indexOf(query, at)) {
-        el.append(text.slice(at, i));
-        const mark = document.createElement("mark");
-        mark.textContent = text.slice(i, i + query.length);
-        el.append(mark);
-        at = i + query.length;
+    el.append(markFragment(text, query));
+}
+
+// Highlight hits in the decoded text nodes under `root`, so entities and
+// tags in already-parsed markup are never split.
+function markTextNodes(root, query) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n);
+    for (const node of nodes) {
+        if (node.data.toLowerCase().includes(query)) node.replaceWith(markFragment(node.data, query));
     }
-    el.append(text.slice(at));
 }
 
 function sectionTitle(section) {
@@ -298,9 +316,9 @@ export class MetadataPanel {
         copy.textContent = "copy raw";
         copy.addEventListener("click", () => this.copy(plain, copy));
         const pre = document.createElement("pre");
-        // Escape first, then color XML tags (PDS4 sections only); highlight
-        // search hits in text only.
-        let html = parts.map(p => {
+        // Escape first, then color XML tags (PDS4 sections only); search hits
+        // are marked afterwards on the parsed text nodes.
+        const html = parts.map(p => {
             let body = escapeHTML(p.text);
             if (p.section.kind === "PDS4" && p.section.raw) {
                 body = body.replace(/(&lt;[^]*?&gt;)/g, '<span class="xml-tag">$1</span>');
@@ -309,14 +327,8 @@ export class MetadataPanel {
                 ? `<span class="meta-divider">${escapeHTML(p.divider)}</span>` : "";
             return divider + body;
         }).concat(notes.map(escapeHTML)).join("\n");
-        if (q) {
-            const needle = escapeHTML(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-            html = html.replace(new RegExp(`(<[^>]*>)|(${needle})`, "gi"), (m, tag, hit) => {
-                if (tag) return tag;
-                return `<mark>${hit}</mark>`;
-            });
-        }
         pre.innerHTML = html;
+        if (q) markTextNodes(pre, q);
         this.body.append(copy, pre);
     }
 
