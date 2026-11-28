@@ -32,7 +32,7 @@ from pathlib import Path
 
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
-from packaging.specifiers import SpecifierSet
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
@@ -88,9 +88,22 @@ def applies(requirement, env, extras):
     )
 
 
-def newest_pure_wheel(name, specifier):
+def supports_python(requires_python, python_version):
+    """Whether a file's Requires-Python admits `python_version`."""
+    if not requires_python:
+        return True
+    try:
+        return SpecifierSet(requires_python).contains(
+            python_version, prereleases=True
+        )
+    except InvalidSpecifier:
+        return False
+
+
+def newest_pure_wheel(name, specifier, python_version):
     """(version, url, requires_dist) of the newest release of `name` that
-    satisfies `specifier` and has a non-yanked pure-Python wheel."""
+    satisfies `specifier` and has a non-yanked pure-Python wheel whose
+    Requires-Python admits `python_version` (Pyodide's bundled Python)."""
     index = get_json(f"https://pypi.org/pypi/{name}/json")
     candidates = []
     for version_string, files in index["releases"].items():
@@ -102,14 +115,17 @@ def newest_pure_wheel(name, specifier):
             continue
         wheels = [
             f for f in files
-            if not f.get("yanked") and PURE_WHEEL_RE.search(f["filename"])
+            if not f.get("yanked")
+            and PURE_WHEEL_RE.search(f["filename"])
+            and supports_python(f.get("requires_python"), python_version)
         ]
         if wheels:
             candidates.append((version, wheels[0]["url"]))
     if not candidates:
         sys.exit(
             f"{name}{specifier} is not in Pyodide's distribution and has no "
-            "pure-Python wheel on PyPI; Pyodide can't load it"
+            f"pure-Python wheel on PyPI compatible with Python "
+            f"{python_version}; Pyodide can't load it"
         )
     version, url = max(candidates)
     release = get_json(f"https://pypi.org/pypi/{name}/{version}/json")
@@ -120,7 +136,8 @@ def resolve(pdr_version=None):
     pyver = pyodide_version()
     lock = get_json(f"https://cdn.jsdelivr.net/pyodide/v{pyver}/full/pyodide-lock.json")
     in_pyodide = {canonicalize_name(k): v for k, v in lock["packages"].items()}
-    env = marker_environment(lock["info"]["python"])
+    python_version = lock["info"]["python"]
+    env = marker_environment(python_version)
 
     root = Requirement(ROOT_REQUIREMENT)
     if pdr_version:
@@ -142,7 +159,9 @@ def resolve(pdr_version=None):
             if from_pypi[name][0] not in requirement.specifier:
                 sys.exit(f"pinned {name} {from_pypi[name][0]} conflicts with {where}")
             continue
-        version, url, requires = newest_pure_wheel(name, requirement.specifier)
+        version, url, requires = newest_pure_wheel(
+            name, requirement.specifier, python_version
+        )
         from_pypi[name] = (version, url)
         for spec in requires:
             dependency = Requirement(spec)
