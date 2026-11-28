@@ -13,6 +13,7 @@ out vec4 outColor;
 #define STRETCH_LIN 0
 #define STRETCH_LOGLIKE 1
 #define STRETCH_TANH 2
+#define STRETCH_ASINH 3
 
 #ifndef STRETCH_MODE
 #define STRETCH_MODE 0
@@ -37,6 +38,10 @@ void main() {
     vec4 rgb = vec4(logLikeScale(norm, u_stretchParam), 1.0);
 #elif STRETCH_MODE == STRETCH_TANH
     vec4 rgb = vec4(tanh(norm * u_stretchParam), 1.0);
+#elif STRETCH_MODE == STRETCH_ASINH
+    // normalized so that 0 -> 0 and 1 -> 1; k -> 0 approaches linear
+    float k = max(u_stretchParam, 1e-6);
+    vec4 rgb = vec4(asinh(norm * k) / asinh(k), 1.0);
 #else
     // error
     outColor = vec4(1.0, 0.0, 1.0, 1.0);

@@ -603,12 +603,23 @@ export class GlitchRenderer {
     // when AUTO tracks the current view and the full-image pass moves it.
     // Decorrelation Stretch recomputes its statistics at full resolution,
     // over the region that was on screen.
-    async createExport(t, fullImage) {
+    // highPrecision runs every effect into RGBA32F buffers (the default
+    // RGBA16F keeps only ~11 significant bits), then restores the pipeline.
+    async createExport(t, fullImage, highPrecision = false) {
         this.dcsExport = true;
+        if (highPrecision) {
+            this.exportF32 = true;
+            this.reset_pipeline();
+        }
         try {
             return this.withFrozenView(() => this.renderExport(t, fullImage));
         } finally {
             this.dcsExport = false;
+            if (highPrecision) {
+                this.exportF32 = false;
+                this.reset_pipeline();
+                this.inputDirty = true;
+            }
         }
     }
 
@@ -653,30 +664,32 @@ export class GlitchRenderer {
         }
         const oldZoom = this.zoom;
         const oldPan = [this.centerX, this.centerY];
-        this.zoom = 1.0;
-        this.centerX = 0.5;
-        this.centerY = 0.5;
-        const iw = this.inputWidth
-        const ih = this.inputHeight;
-        const [w, h] = this.getImageSize();
-        this.inputWidth = w;
-        this.inputHeight = h;
-        this.gl.canvas.width = w;
-        this.gl.canvas.height = h;
-        // The working region is now the whole image at native resolution.
-        this.loadImage();
-        const tex = this.applyEffects(t);
-        const pixels = this.readFramebufferToPixels(tex, gl.canvas.width, gl.canvas.height);
-        [this.inputWidth, this.inputHeight] = [iw, ih];
-        this.inputDirty = true;
-        this.gl.canvas.width = iw;
-        this.gl.canvas.height = ih;
-        if (fullImage) {
+        const [iw, ih] = [this.inputWidth, this.inputHeight];
+        // The canvas fills the display pane; this is its size, which is not
+        // the working-texture size (inputWidth / inputHeight).
+        const [cw, ch] = [gl.canvas.width, gl.canvas.height];
+        try {
+            this.zoom = 1.0;
+            this.centerX = 0.5;
+            this.centerY = 0.5;
+            const [w, h] = this.getImageSize();
+            this.inputWidth = w;
+            this.inputHeight = h;
+            gl.canvas.width = w;
+            gl.canvas.height = h;
+            // The working region is now the whole image at native resolution.
+            this.loadImage();
+            const tex = this.applyEffects(t);
+            const pixels = this.readFramebufferToPixels(tex, w, h);
+            return {pixels, w, h};
+        } finally {
+            [this.inputWidth, this.inputHeight] = [iw, ih];
+            this.inputDirty = true;
+            gl.canvas.width = cw;
+            gl.canvas.height = ch;
             this.zoom = oldZoom;
-            this.centerX = oldPan[0];
-            this.centerY = oldPan[1];
+            [this.centerX, this.centerY] = oldPan;
         }
-        return {pixels, w, h};
     }
 
 
@@ -756,7 +769,7 @@ export class GlitchRenderer {
                     if (fx.glState.renderer !== this) {
                         throw new Error("GL effect not attached to this renderer")
                     }
-                    const fmt = fx.requires_f32 ? this.f32_format : null;
+                    const fmt = (fx.requires_f32 || this.exportF32) ? this.f32_format : null;
                     const fbo = this.getEffectFBO(fx.id, width, height, fx.name, fmt);
                     if (fx.glState) {
                         fx.glState.uniformsDirty = !(configHash === this.renderCache.get(fx.id)?.configHash);
@@ -1333,6 +1346,20 @@ export class GlitchRenderer {
             srcU: this.centerX + (u - 0.5) * spanX,
             srcV: this.centerY + (v - 0.5) * spanY,
             inImage: u >= 0 && u < 1 && v >= 0 && v < 1,
+        };
+    }
+
+    // Inverse of clientToSourceUV: client coordinates of source uv (u, v).
+    sourceUVToClient(srcU, srcV) {
+        const canvas = this.gl.canvas;
+        const rect = canvas.getBoundingClientRect();
+        const viewRect = this.getViewRect();
+        const [spanX, spanY] = this.getViewSpan(viewRect.w, viewRect.h);
+        const px = viewRect.x + ((srcU - this.centerX) / spanX + 0.5) * viewRect.w;
+        const py = viewRect.y + ((srcV - this.centerY) / spanY + 0.5) * viewRect.h;
+        return {
+            clientX: rect.left + px * (rect.width / canvas.width),
+            clientY: rect.top + py * (rect.height / canvas.height),
         };
     }
 

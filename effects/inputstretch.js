@@ -3,6 +3,7 @@ import {
     makeEnum
 } from "../utils/glsl_enums.js";
 import {initGLEffect, loadFragSrcInit} from "../utils/gl.js";
+import {percentileBounds} from "../utils/stretch.js";
 
 const shaderPath = "input_stretch.frag"
 const includePaths = {}
@@ -16,7 +17,9 @@ const {
     'NONE',
     'STDEV',
     'P02_P98',
-    'ABSOLUTE'
+    'ABSOLUTE',
+    'ZSCALE',
+    'PERCENTILE'
 ])
 
 const {
@@ -26,7 +29,8 @@ const {
 } = makeEnum([
     'LIN',
     'LOGLIKE',
-    'TANH'
+    'TANH',
+    'ASINH'
 ])
 
 /**
@@ -40,12 +44,16 @@ export function inputStretchBounds(
     stdevClip = instance.config.stdevClip,
     absMin = instance.config.absMin,
     absMax = instance.config.absMax,
+    pctLow = instance.config.pctLow,
+    pctHigh = instance.config.pctHigh,
 ) {
     const clipModeN = Number(clipMode);
     const mean = instance.auxiliaryCache.mean;
     const std = instance.auxiliaryCache.std;
     const p02 = instance.auxiliaryCache.p02;
     const p98 = instance.auxiliaryCache.p98;
+    const zmin = instance.auxiliaryCache.zmin;
+    const zmax = instance.auxiliaryCache.zmax;
     const scale = instance.auxiliaryCache.scale;
     const offset = instance.auxiliaryCache.offset;
     let min, max;
@@ -66,6 +74,23 @@ export function inputStretchBounds(
             [min, max] = [p02, p98];
         }
     }
+    else if (clipModeN === ClipEnum.ZSCALE) {
+        // IRAF zscale limits, computed in pdrview.zscale_limits (vendored
+        // from astropy's ZScaleInterval)
+        if (zmin === undefined || zmax === undefined) {
+            [min, max] = [0, 1];
+        } else {
+            [min, max] = [zmin, zmax];
+        }
+    }
+    else if (clipModeN === ClipEnum.PERCENTILE) {
+        // computed here from the source pixels (cached per source), so any
+        // percentile pair can be chosen without a round trip to Python
+        const lo = Math.min(Number(pctLow), Number(pctHigh));
+        const hi = Math.max(Number(pctLow), Number(pctHigh));
+        const bounds = percentileBounds(instance.glState?.renderer?.source, lo, hi);
+        [min, max] = bounds ?? [0, 1];
+    }
     else if (clipModeN === ClipEnum.ABSOLUTE) {
         [min, max] = [(absMin - offset) / scale, (absMax - offset) / scale];
     }
@@ -84,8 +109,11 @@ export default {
         stretchMode: StretchEnum.LIN,
         stdevClip: 2,
         stretchParam: 2,
+        asinhParam: 10,
         absMin: 0,
-        absMax: 1
+        absMax: 1,
+        pctLow: 0.5,
+        pctHigh: 99.5
     },
     uiLayout: [
         {'type': 'select', 'key': 'clipMode', 'label': 'Range Clip', 'options': ClipOpts},
@@ -101,12 +129,44 @@ export default {
         },
         {
             'type': 'range',
+            'key': 'pctLow',
+            'label': 'Low Percentile',
+            'min': 0,
+            'max': 100,
+            'step': 0.001,
+            'showIf': {key: "clipMode", equals: ClipEnum.PERCENTILE}
+        },
+        {
+            'type': 'range',
+            'key': 'pctHigh',
+            'label': 'High Percentile',
+            'min': 0,
+            'max': 100,
+            'step': 0.001,
+            'showIf': {key: "clipMode", equals: ClipEnum.PERCENTILE}
+        },
+        {
+            'type': 'range',
             'key': 'stretchParam',
             'label': 'Stretch Parameter',
             'min': 0.1,
             'max': 10,
             'step': 0.1,
-            'showIf': {key: "stretchMode", notEquals: StretchEnum.LIN}
+            'showIf': [
+                {key: "stretchMode", notEquals: StretchEnum.LIN},
+                {key: "stretchMode", notEquals: StretchEnum.ASINH},
+            ]
+        },
+        {
+            'type': 'range',
+            'key': 'asinhParam',
+            'label': 'ArcSinh Softening',
+            'scale': 'log',
+            'scaleFactor': 10,
+            'min': 0.1,
+            'max': 1000,
+            'step': 0.1,
+            'showIf': {key: "stretchMode", equals: StretchEnum.ASINH}
         },
         {
             'type': 'range',
@@ -133,16 +193,21 @@ export default {
     apply(instance, inputTex, width, height, t, outputFBO) {
         initGLEffect(instance, fragSources);
         const {
-            clipMode, stdevClip, stretchMode, stretchParam,
-            absMin, absMax
+            clipMode, stdevClip, stretchMode, stretchParam, asinhParam,
+            absMin, absMax, pctLow, pctHigh
         } = resolveAnimAll(instance.config, t);
 
-        const [min, max] = inputStretchBounds(instance, clipMode, stdevClip, absMin, absMax);
+        const [min, max] = inputStretchBounds(
+            instance, clipMode, stdevClip, absMin, absMax, pctLow, pctHigh
+        );
         const uniformSpec = {
             u_resolution: {type: "vec2", value: [width, height]},
             u_min: {type: "float", value: min},
             u_max: {type: "float", value: max},
-            u_stretchParam: {type: "float", value: stretchParam}
+            u_stretchParam: {
+                type: "float",
+                value: Number(stretchMode) === StretchEnum.ASINH ? asinhParam : stretchParam
+            }
         }
         const defines = {
             STRETCH_MODE: stretchMode

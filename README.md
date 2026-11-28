@@ -37,7 +37,15 @@ Then open http://localhost:8000/.
   Network tab while developing.
 - Loading PDS products (via [pdr](https://github.com/MillionConcepts/pdr))
   runs in the browser through Pyodide, which is fetched from a CDN, so that
-  feature needs network access.
+  feature needs network access. Pyodide starts loading in the background as
+  soon as the "Open With PDR" dialog opens.
+- The pdr version is pinned: `pdr-packages.js` lists the exact packages
+  Pyodide loads (wheel URLs for those not in Pyodide's distribution), so
+  loading skips micropip. To upgrade pdr, or after changing the Pyodide
+  version in `pdr.js`, run `python tools/pin_pdr_wheels.py` (needs network
+  access and `packaging`) and commit the result. The `Pin pdr wheels` GitHub
+  Action does this weekly: it runs the tests against the new pins and opens
+  a PR.
 
 ## Testing
 
@@ -85,5 +93,17 @@ pytest tests/test_dcs.py    # one area; or select tests with -k <name>
 `vandal` bears the BSD 3-Clause License, copyright Michael St. Clair. You can 
 do nearly anything you want with this code. Some ancillary shaders bear 
 additional licenses (attached as headers to individual files).
+
+### Third-party code
+
+- `zscale_limits()` in `pdrview.py`, which powers Input Stretch's ZSCALE clip
+  mode, is vendored and lightly adapted from
+  [astropy](https://www.astropy.org/)'s
+  `astropy.visualization.ZScaleInterval`, itself derived from IRAF's zscale
+  via [stsci.numdisplay](https://github.com/spacetelescope/stsci.numdisplay).
+  It is used under astropy's BSD 3-Clause License (copyright Astropy
+  Developers) and the AURA BSD 3-Clause License (copyright Association of
+  Universities for Research in Astronomy). Both licenses are reproduced in
+  full above the function.
 
 Contributions are not solicited at this time. Feel free to file Issues.

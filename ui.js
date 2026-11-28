@@ -6,7 +6,6 @@ import {
     deleteUserPreset,
     updateAppPresets,
 } from "./utils/presets.js";
-import {populateTestSelect} from "./test_patterns.js";
 import {randomizeEffectStack} from "./utils/randomizer.js";
 
 
@@ -148,8 +147,12 @@ export function placeholderOption(text = "select") {
 // }
 
 export function setupExportImage(exportImage) {
-    document.getElementById('exportImage').onclick = () => exportImage(true);
-    document.getElementById('exportView').onclick = () => exportImage(false);
+    const select = document.getElementById('exportFormat');
+    const saved = localStorage.getItem('exportFormat');
+    if (saved && [...select.options].some(o => o.value === saved)) select.value = saved;
+    select.onchange = () => localStorage.setItem('exportFormat', select.value);
+    document.getElementById('exportImage').onclick = () => exportImage(true, select.value);
+    document.getElementById('exportView').onclick = () => exportImage(false, select.value);
 
 }
 

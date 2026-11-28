@@ -58,7 +58,11 @@ function filesFromDrop(dataTransfer) {
 const isAnyModalOpen = () =>
     Array.from(document.querySelectorAll(".modal")).some((m) => m.style.display === "block");
 
-export function setupOpenFileModal({handleUpload, handlePdrUpload, lockApp, unlockApp}) {
+// preloadPdr: called whenever the dialog opens in PDR mode, to start setting
+// up PDR while the user picks files (optional; must not throw)
+export function setupOpenFileModal({
+    handleUpload, handlePdrUpload, lockApp, unlockApp, preloadPdr = () => {},
+}) {
     const modal = gid("open-file-modal");
     const content = gid("open-file-modal-content");
     const title = gid("open-file-title");
@@ -172,6 +176,7 @@ export function setupOpenFileModal({handleUpload, handlePdrUpload, lockApp, unlo
             modal.style.display = "block";
             lockApp();
             dropZone.focus();
+            if (mode === "pdr") preloadPdr();
         }
         if (mode === "pdr") addFiles(extraFiles, skipped);
         else render();
@@ -213,7 +218,6 @@ export function setupOpenFileModal({handleUpload, handlePdrUpload, lockApp, unlo
 
     // top-bar buttons and dialog controls
     gid("open-pdr-dialog").addEventListener("click", () => openDialog("pdr"));
-    gid("open-browser-dialog").addEventListener("click", () => openDialog("browser"));
     gid("browse-files").addEventListener("click", browse);
     dropZone.addEventListener("click", browse);
     gid("close-open-file-modal").addEventListener("click", closeDialog);

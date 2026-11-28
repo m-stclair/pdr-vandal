@@ -29,10 +29,11 @@ import {
     resizeAndRedraw,
     toggleEffectSelection,
     uiState, setFreezeAnimationButtonFlag, lockRender, unlockRender,
-    activeFile
+    activeFile, panInterface
 } from "./state.js";
 // import "./tools/debugPane.js";
 import {downloadBlob, formatFloatWidth, formatSignificant, gid, vandalStamp} from "./utils/helpers.js";
+import {encodeTiff} from "./utils/tiff.js";
 import {renderStackUI} from "./ui_builder.js";
 import {effectRegistry} from "./registry.js";
 import {resolveAnim} from "./utils/animutils.js";
@@ -40,15 +41,29 @@ import {resolveAnim} from "./utils/animutils.js";
 // noinspection ES6UnusedImports
 import {EffectPicker} from './components/effectpicker.js'
 import {HistogramPanel} from './components/histogram.js'
+import {MetadataPanel} from './components/metadata.js'
 import {setupOpenFileModal} from './components/openfile.js'
-import {pdrInitializedFlag, initPDR, getPyodide, getProductInfo, getArrayImage, flushPdrCache} from "./pdr.js";
-import {drawPattern} from "./test_patterns.js";
+import {
+    pdrInitializedFlag, initPDR, preloadPDR, getPyodide, getProductInfo, getArrayImage,
+    flushPdrCache, getProductLabel
+} from "./pdr.js";
+import {
+    bayerWarning, clampGeometry, composeOrientation, cropToRegion, geometrySuffix,
+    identityGeometry, isIdentity, outputSize, pushHistory, toOriginalPixel, withAutoBin,
+    withoutBin, applyGeometryToArray
+} from "./utils/geometry.js";
+import {drawPattern, floatArrayData} from "./test_patterns.js";
+// Shown at start-up and after Close Image: a simulated raw frame, loaded as
+// float data like a PDR product, so Input Stretch and Debayer apply to it.
+const DEFAULT_PATTERN = "bayer rggb";
 import {getAppPresetView} from "./utils/presets.js";
 
 
 let animating = false;
 // Histogram of the displayed image (created in appSetup).
 export let histogramPanel = null;
+// Searchable pane of the product's labels and headers (created in appSetup).
+export let metadataPanel = null;
 let startTime = null;
 let timePhase = 0;
 
@@ -67,8 +82,12 @@ function handleHTMLUpload(e) {
     const img = new Image();
     img.onload = async () => {
         appRenderer.setHTMLSource(img);
-        gid("pdrUI").style.display = "none"
+        setPdrUIVisible(false);
         await resetPdr();
+        // a browser image has no float array to crop or rotate
+        localArray = null;
+        resetGeometry();
+        setGeometryToolbarVisible(false);
         resizeAndRedraw();
     }
     gid("activeFile").innerText = file.name;
@@ -79,9 +98,47 @@ function handleHTMLUpload(e) {
 // info for 'active' product
 let pdrProductInfo = {};
 
+// The float array made in the browser that is shown when no PDR product is
+// loaded (the start-up test pattern): {pixels, width, height}, untransformed,
+// or null. Crop / rotate / flip apply to it in JS (loadCurrentArray).
+let localArray = null;
+
+// Crop / rotate / flip the user chose for the current PDR object, or for
+// localArray (utils/geometry.js), in original pixel coordinates, with bin
+// always 1; null means none. Reset when the object changes, kept across
+// band changes.
+let pdrGeometry = null;
+// The geometry actually applied to the array on display (by Python for a
+// PDR band): pdrGeometry clamped, plus the automatic bin an over-large array
+// needs to fit in one texture. null for the untransformed array.
+let pdrResolvedGeometry = null;
+// Earlier values of pdrGeometry, newest last, for the undo button.
+const GEOMETRY_HISTORY_CAP = 10;
+let geometryHistory = [];
+// Pixel array of the geometry-capable array on display (PDR band or
+// localArray), so the coordinate readout and the toolbar know whether the
+// renderer source is still that array (and pdrResolvedGeometry applies)
+// rather than a browser image.
+let displayedArrayPixels = null;
+
+// Width / height (and, for PDR, the rest of the object info) of the array
+// the toolbar works on.
+function currentObjInfo() {
+    if (pdrProductInfo.name) return pdrProductInfo.objects?.[dataObjectSelect.value];
+    return localArray ?? undefined;
+}
+
+function resetGeometry() {
+    pdrGeometry = null;
+    pdrResolvedGeometry = null;
+    geometryHistory = [];
+}
+
 let currentImageRequest = 0;
 
 async function resetPdr() {
+    labelRequest++;
+    metadataPanel?.clear();
     if (!pdrInitializedFlag || !pdrProductInfo.name) return;
     await flushPdrCache();
 
@@ -93,7 +150,64 @@ async function resetPdr() {
         pdrProductInfo.files = undefined;
     }
     pdrProductInfo.name = undefined;
-    gid("pdrUI").style.display = "none"
+    resetGeometry();
+    displayedArrayPixels = null;
+    // the toolbar is left to whatever is shown next
+    setPdrUIVisible(false);
+}
+
+// The object / band selectors.
+function setPdrUIVisible(visible) {
+    gid("pdrUI").style.display = visible ? "block" : "none";
+}
+
+// The crop / rotate toolbar: shown for PDR products and localArray.
+function setGeometryToolbarVisible(visible) {
+    gid("geometryToolbar").style.display = visible ? "block" : "none";
+    if (!visible) endCropSelect();
+}
+
+// Show the start-up test pattern, untransformed, with the toolbar working
+// on it (startup and Close Image).
+async function showDefaultPattern() {
+    resetGeometry();
+    localArray = (await drawPattern(DEFAULT_PATTERN)) ?? null;
+    displayedArrayPixels = localArray?.pixels ?? null;
+    setGeometryToolbarVisible(localArray !== null);
+    updateGeometryUI();
+}
+
+// Load the array the toolbar works on with the current geometry: the PDR
+// band through Python, or localArray here. Returns true once displayed.
+async function loadCurrentArray() {
+    if (pdrProductInfo.name) return await handlePdrBandSelect();
+    if (!localArray) return false;
+    const {pixels, width, height} = localArray;
+    const requested = requestedGeometry(localArray);
+    const shown = requested ? applyGeometryToArray(pixels, width, height, requested) : localArray;
+    pdrResolvedGeometry = requested;
+    displayedArrayPixels = shown.pixels;
+    loadFloatSource(floatArrayData(shown.pixels, shown.width, shown.height));
+    clearRenderCache();
+    updateGeometryUI();
+    resizeAndRedraw();
+    requestUIDraw();
+    return true;
+}
+
+function maxTextureSize() {
+    return appRenderer.gl.getParameter(appRenderer.gl.MAX_TEXTURE_SIZE);
+}
+
+// What to ask Python for: the user's geometry plus the bin needed to fit,
+// or null for the untransformed array.
+function requestedGeometry(objInfo) {
+    const g = withAutoBin(
+        clampGeometry(pdrGeometry ?? identityGeometry(objInfo.width, objInfo.height),
+            objInfo.width, objInfo.height),
+        maxTextureSize()
+    );
+    return isIdentity(g, objInfo.width, objInfo.height) ? null : g;
 }
 
 // returns true if the selected band was loaded and displayed
@@ -105,14 +219,21 @@ async function handlePdrBandSelect() {
         const fn = pdrProductInfo.name;
         const objname = dataObjectSelect.value;
         const band = imageBandSelect.value;
-        const arrayData = await getArrayImage(fn, objname, Number(band));
+        const objInfo = pdrProductInfo.objects[objname];
+        const requested = requestedGeometry(objInfo);
+        const geometry = requested ? JSON.stringify(requested) : null;
+        const arrayData = await getArrayImage(fn, objname, Number(band), geometry);
 
         if (requestId !== currentImageRequest) {
             console.warn("Debounced PDR band select request");
             return false;
         }
 
+        // the geometry Python actually applied (clamped), or null for none
+        pdrResolvedGeometry = arrayData.geometry ? JSON.parse(arrayData.geometry) : null;
+        displayedArrayPixels = arrayData.pixels;
         loadFloatSource(arrayData);
+        updateGeometryUI();
         gid("activeFile").innerText = pdrProductInfo.name;
         activeFile[0] = pdrProductInfo.name;
         resizeAndRedraw();
@@ -150,13 +271,12 @@ async function handlePdrObjectChange() {
     if (objInfo === undefined) {
         throw new Error(`${objname} not in product`)
     }
-    const maxDimension = appRenderer.gl.getParameter(appRenderer.gl.MAX_TEXTURE_SIZE);
-    if (objInfo.width > maxDimension || objInfo.height > maxDimension) {
-        showPDRErrorModal(
-            `Array too large for this browser (max dimension is ${maxDimension}).`
-        )
-        return false;
-    }
+    // An array too large for one texture is rebinned just enough to fit
+    // (requestedGeometry), rather than refused; cropping to a region that
+    // fits shows it at full resolution.
+    pdrGeometry = null;
+    pdrResolvedGeometry = null;
+    geometryHistory = [];
     populateBandOptions(objInfo);
     return await handlePdrBandSelect();
 }
@@ -175,6 +295,229 @@ imageBandSelect.addEventListener('change', async () => {
     unlockRender();
 })
 
+// --- crop / rotate / flip ----------------------------------------------
+
+const cropSelectButton = gid("geom-crop-select");
+const cropViewButton = gid("geom-crop-view");
+const undoButton = gid("geom-undo");
+const resetButton = gid("geom-reset");
+const cropOverlay = gid("cropSelectOverlay");
+
+// whether the renderer is showing the PDR band (not a test pattern or
+// browser image), so its view maps onto pdrResolvedGeometry
+function showingGeometryArray() {
+    return displayedArrayPixels !== null && appRenderer.source?.data === displayedArrayPixels;
+}
+
+function currentGeometry(objInfo) {
+    return pdrGeometry ?? identityGeometry(objInfo.width, objInfo.height);
+}
+
+function updateGeometryUI() {
+    const objInfo = currentObjInfo();
+    if (!objInfo) return;
+    const {width: W, height: H} = objInfo;
+    const g = pdrResolvedGeometry ?? identityGeometry(W, H);
+
+    const onBand = showingGeometryArray();
+    cropSelectButton.disabled = !onBand;
+    cropViewButton.disabled = !onBand;
+    undoButton.disabled = geometryHistory.length === 0;
+    resetButton.disabled = isIdentity(currentGeometry(objInfo), W, H);
+    if (!onBand) endCropSelect();
+
+    const status = gid("geom-status");
+    status.replaceChildren();
+    const [ow, oh] = outputSize(g);
+    const lines = isIdentity(g, W, H)
+        ? [`full ${W}×${H} array`]
+        : [`${ow}×${oh} from ${W}×${H} (${geometrySuffix(g, W, H)})`];
+    if (g.bin > 1) {
+        lines.push(
+            `Larger than this browser's maximum texture size (${maxTextureSize()}); ` +
+            `downsampled ${g.bin}×${g.bin} to fit. Crop to see full resolution.`
+        );
+    }
+    status.append(lines.join("\n"));
+    const debayer = getEffectStack().some(fx => fx.name === "Debayer" && !fx.disabled);
+    const warning = debayer ? bayerWarning(g) : null;
+    if (warning) {
+        const w = document.createElement("div");
+        w.className = "warn";
+        w.textContent = warning;
+        status.append(w);
+    }
+}
+
+// Load the current band with a new user geometry, starting from a
+// fit-to-window view of the result. Unless `record` is false, the geometry
+// it replaces goes on the undo stack once the load succeeds.
+async function applyGeometry(next, {record = true} = {}) {
+    const objInfo = currentObjInfo();
+    if (!objInfo) return;
+    const {width: W, height: H} = objInfo;
+    const previous = pdrGeometry;
+    pdrGeometry = withoutBin(clampGeometry(next, W, H));
+    appRenderer.zoom = 1.0;
+    appRenderer.centerX = 0.5;
+    appRenderer.centerY = 0.5;
+    lockRender();
+    try {
+        if (await loadCurrentArray()) {
+            if (record) {
+                geometryHistory = pushHistory(
+                    geometryHistory, previous ?? identityGeometry(W, H), GEOMETRY_HISTORY_CAP
+                );
+            }
+        } else {
+            pdrGeometry = previous;
+        }
+        updateGeometryUI();
+    } finally {
+        requestRender();
+        unlockRender();
+    }
+}
+
+for (const op of ["cw", "ccw", "flipH", "flipV"]) {
+    gid(`geom-${op}`).addEventListener("click", () => {
+        const objInfo = currentObjInfo();
+        if (!objInfo) return;
+        applyGeometry(composeOrientation(currentGeometry(objInfo), op));
+    });
+}
+
+// Crop to a uv rect of the displayed array. The bin of the result is
+// dropped: the next load re-derives it for the smaller region.
+function cropToUV(region) {
+    const objInfo = currentObjInfo();
+    if (!objInfo || !showingGeometryArray()) return;
+    const g = pdrResolvedGeometry ?? identityGeometry(objInfo.width, objInfo.height);
+    applyGeometry(cropToRegion(g, region));
+}
+
+cropViewButton.addEventListener("click", () => cropToUV(appRenderer.getViewRegion()));
+
+undoButton.addEventListener("click", () => {
+    if (geometryHistory.length === 0) return;
+    const prev = geometryHistory[geometryHistory.length - 1];
+    geometryHistory = geometryHistory.slice(0, -1);
+    applyGeometry(prev, {record: false});
+});
+
+resetButton.addEventListener("click", () => {
+    const objInfo = currentObjInfo();
+    if (!objInfo) return;
+    applyGeometry(identityGeometry(objInfo.width, objInfo.height));
+});
+
+// --- freeform crop selection ---
+// While the crop tool is active, a drag on the canvas selects a rectangle
+// (kept in source uv, so it stays put on the image) instead of panning.
+
+const canvasEl = appRenderer.gl.canvas;
+let cropSelecting = false;
+// {pointerId, start: {u, v}, end: {u, v}, x0, y0} while dragging
+let cropDrag = null;
+const MIN_CROP_DRAG_PX = 4;
+
+function beginCropSelect() {
+    if (!showingGeometryArray()) return;
+    cropSelecting = true;
+    panInterface.enabled = false;
+    cropSelectButton.classList.add("active");
+    canvasEl.classList.add("crop-selecting");
+}
+
+function endCropSelect() {
+    cropSelecting = false;
+    cancelCropDrag();
+    panInterface.enabled = true;
+    cropSelectButton.classList.remove("active");
+    canvasEl.classList.remove("crop-selecting");
+}
+
+function cancelCropDrag() {
+    if (cropDrag && canvasEl.hasPointerCapture?.(cropDrag.pointerId)) {
+        canvasEl.releasePointerCapture(cropDrag.pointerId);
+    }
+    cropDrag = null;
+    cropOverlay.hidden = true;
+}
+
+function eventUV(e) {
+    const {srcU, srcV} = appRenderer.clientToSourceUV(e.clientX, e.clientY);
+    return {u: Math.max(0, Math.min(1, srcU)), v: Math.max(0, Math.min(1, srcV))};
+}
+
+function drawCropOverlay() {
+    if (!cropDrag) return;
+    const a = appRenderer.sourceUVToClient(cropDrag.start.u, cropDrag.start.v);
+    const b = appRenderer.sourceUVToClient(cropDrag.end.u, cropDrag.end.v);
+    Object.assign(cropOverlay.style, {
+        left: `${Math.min(a.clientX, b.clientX)}px`,
+        top: `${Math.min(a.clientY, b.clientY)}px`,
+        width: `${Math.abs(b.clientX - a.clientX)}px`,
+        height: `${Math.abs(b.clientY - a.clientY)}px`,
+    });
+    cropOverlay.hidden = false;
+}
+
+cropSelectButton.addEventListener("click", () => {
+    if (cropSelecting) endCropSelect(); else beginCropSelect();
+});
+
+canvasEl.addEventListener("pointerdown", (e) => {
+    if (!cropSelecting || e.button !== 0) return;
+    if (!appRenderer.clientToSourceUV(e.clientX, e.clientY).inImage) return;
+    const start = eventUV(e);
+    cropDrag = {pointerId: e.pointerId, start, end: start, x0: e.clientX, y0: e.clientY};
+    canvasEl.setPointerCapture?.(e.pointerId);
+    e.preventDefault();
+});
+
+canvasEl.addEventListener("pointermove", (e) => {
+    if (!cropDrag || e.pointerId !== cropDrag.pointerId) return;
+    cropDrag.end = eventUV(e);
+    drawCropOverlay();
+});
+
+canvasEl.addEventListener("pointerup", (e) => {
+    if (!cropDrag || e.pointerId !== cropDrag.pointerId) return;
+    const drag = cropDrag;
+    drag.end = eventUV(e);
+    const moved = Math.max(Math.abs(e.clientX - drag.x0), Math.abs(e.clientY - drag.y0));
+    cancelCropDrag();
+    if (moved < MIN_CROP_DRAG_PX) return;  // a click, not a selection
+    const u0 = Math.min(drag.start.u, drag.end.u), u1 = Math.max(drag.start.u, drag.end.u);
+    const v0 = Math.min(drag.start.v, drag.end.v), v1 = Math.max(drag.start.v, drag.end.v);
+    if (u1 <= u0 || v1 <= v0) return;
+    endCropSelect();
+    cropToUV({u0, u1, v0, v1});
+});
+
+canvasEl.addEventListener("pointercancel", (e) => {
+    if (cropDrag && e.pointerId === cropDrag.pointerId) cancelCropDrag();
+});
+
+// Zooming mid-drag would move the image under a half-drawn box; drop it.
+// (Zooming with the tool active but no drag in progress is fine.)
+canvasEl.addEventListener("wheel", () => {
+    if (cropDrag) cancelCropDrag();
+}, {passive: true});
+
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && cropSelecting) endCropSelect();
+});
+
+// Filename tag for exports of a transformed PDR object, e.g. "crop..._rot90"
+// (with "_bin2" etc. when it was downsampled to fit).
+function exportTag() {
+    const objInfo = currentObjInfo();
+    if (!objInfo || !pdrResolvedGeometry || !showingGeometryArray()) return "";
+    return geometrySuffix(pdrResolvedGeometry, objInfo.width, objInfo.height);
+}
+
 async function populatePdrUI() {
     if (!pdrProductInfo) return;
     dataObjectSelect.options.length = 0;
@@ -187,7 +530,8 @@ async function populatePdrUI() {
         }
     )
     dataObjectSelect.options[0].selected = true;
-    gid("pdrUI").style.display = "block"
+    setPdrUIVisible(true);
+    setGeometryToolbarVisible(true);
 }
 
 function setupInputStretch() {
@@ -251,6 +595,15 @@ function renderCoords(e, renderer, output) {
         values.push(formatSignificant(unscaled));
     }
     const valText = values.join(", ");
+    const objInfo = currentObjInfo();
+    if (pdrResolvedGeometry && objInfo && renderer.source.data === displayedArrayPixels
+        && !isIdentity(pdrResolvedGeometry, objInfo.width, objInfo.height)) {
+        // where this pixel came from in the untransformed array
+        const o = toOriginalPixel(pdrResolvedGeometry, rx, ry);
+        coordText += o.x1 === o.x0
+            ? ` [orig (${o.x0}, ${o.y0})]`
+            : ` [orig (${o.x0}–${o.x1}, ${o.y0}–${o.y1})]`;
+    }
     output.innerText = `${coordText} -- ${valText}`;
 }
 
@@ -317,6 +670,26 @@ async function rollbackPdrFiles(pyodide, backups) {
     await flushPdrCache();
 }
 
+// Fill the metadata pane with the displayed product's labels and headers,
+// after the new image has painted (reading them sniffs the product's data
+// files, and Pyodide runs on this thread). A read that fails shows its error
+// in the pane; it never fails the upload. labelRequest drops a read that a
+// newer product (or closing this one) has overtaken.
+let labelRequest = 0;
+
+async function showProductLabel(name) {
+    const id = ++labelRequest;
+    await delayNextPaint();
+    if (id !== labelRequest || pdrProductInfo.name !== name) return;
+    try {
+        const label = await getProductLabel(name);
+        if (id === labelRequest) metadataPanel.setLabel(label);
+    } catch (err) {
+        console.error("reading the product label failed:", err);
+        if (id === labelRequest) metadataPanel.setError(String(err?.message ?? err));
+    }
+}
+
 // files: File[]; the first one is the primary file pdr reads (usually the
 // label, see components/openfile.js)
 async function handlePdrUpload(files) {
@@ -325,7 +698,7 @@ async function handlePdrUpload(files) {
     lockApp();
     pdrLoadingModal.style.display = "block";
     if (!pdrInitializedFlag) {
-        pdrLoadingModalContent.innerText = "Setting up PDR (wait ~20 seconds)..."
+        pdrLoadingModalContent.innerText = "Setting up PDR..."
     }
     let pyodide = null;
     const backups = new Map();
@@ -333,6 +706,9 @@ async function handlePdrUpload(files) {
     const prev = pdrProductInfo;
     const prevObject = dataObjectSelect.value;
     const prevBand = imageBandSelect.value;
+    const prevGeometry = pdrGeometry;
+    const prevResolvedGeometry = pdrResolvedGeometry;
+    const prevGeometryHistory = geometryHistory;
     // set once pdrProductInfo and the PDR UI point at the new product
     let switched = false;
     // set once the new product is fully displayed; past that point there is
@@ -350,8 +726,20 @@ async function handlePdrUpload(files) {
                     populateBandOptions(objInfo);
                     imageBandSelect.value = prevBand;
                 }
+                // the previous product is still on display, as it was
+                pdrGeometry = prevGeometry;
+                pdrResolvedGeometry = prevResolvedGeometry;
+                geometryHistory = prevGeometryHistory;
+                updateGeometryUI();
             } else {
-                gid("pdrUI").style.display = "none";
+                // the test pattern (localArray) or a browser image is still
+                // on display, with the geometry it had
+                setPdrUIVisible(false);
+                pdrGeometry = prevGeometry;
+                pdrResolvedGeometry = prevResolvedGeometry;
+                geometryHistory = prevGeometryHistory;
+                setGeometryToolbarVisible(localArray !== null && showingGeometryArray());
+                updateGeometryUI();
             }
         }
         if (pyodide && backups.size > 0) {
@@ -415,6 +803,8 @@ async function handlePdrUpload(files) {
             }
         }
         unlockApp();
+        // not awaited: the app is usable while the label is read
+        void showProductLabel(firstFile.name);
     } catch (err) {
         console.error(err);
         pdrLoadingModal.style.display = "none";
@@ -443,7 +833,8 @@ async function closeImage() {
     if (pdrProductInfo.name) {
         await resetPdr();
     }
-    await drawPattern("blank");
+    // back to the start-up image
+    await showDefaultPattern();
     unlockRender();
     unlockApp();
     requestRender();
@@ -493,22 +884,47 @@ export function isModulating(fx) {
 }
 
 
-async function exportImage(fullImage = false) {
+async function exportImage(fullImage = false, format = "png8") {
     Lock.image = true;
-    const {pixels, w, h} = await appRenderer.createExport(animating ? timePhase : 0, fullImage);
-    const imgArr = new Uint8ClampedArray(pixels.length);
-    for (let i = 0; i < pixels.length; i++) {
-        imgArr[i] = Math.round(pixels[i] * 255);
+    try {
+        const isTiff = format.startsWith("tiff");
+        const bits = format === "tiff16" ? 16 : 8;
+        const {pixels, w, h} = await appRenderer.createExport(
+            animating ? timePhase : 0, fullImage, isTiff && bits === 16
+        );
+        if (isTiff) {
+            const src = appRenderer.source;
+            const description = JSON.stringify({
+                software: "pdr-vandal",
+                source_scale: src?.scale ?? null,
+                source_offset: src?.offset ?? null,
+                note: "Values are the displayed (stretched, effect-processed) image, not raw data.",
+            });
+            const {blob} = encodeTiff({
+                pixels, w, h, bits, description,
+                sourceBands: appRenderer.ingressBandCount() === 1 ? 1 : 3,
+            });
+            downloadBlob(blob, vandalStamp(activeFile[0], 'tif', exportTag()));
+            return;
+        }
+        const imgArr = new Uint8ClampedArray(pixels.length);
+        for (let i = 0; i < pixels.length; i++) {
+            imgArr[i] = Math.round(pixels[i] * 255);
+        }
+        const imgData = new ImageData(imgArr, w, h);
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext("2d").putImageData(imgData, 0, 0);
+        canvas.toBlob(blob => downloadBlob(blob, vandalStamp(activeFile[0], 'png', exportTag())), "image/png")
+        canvas.remove();
+    } catch (err) {
+        console.error("export failed", err);
+        alert(`Export failed: ${err.message ?? err}`);
+    } finally {
+        Lock.image = false;
+        requestRender();
     }
-    const imgData = new ImageData(imgArr, w, h);
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    canvas.getContext("2d").putImageData(imgData, 0, 0);
-    canvas.toBlob(blob => downloadBlob(blob, vandalStamp(activeFile[0], 'png')), "image/png")
-    canvas.remove();
-    Lock.image = false;
-    requestRender();
 }
 
 
@@ -653,6 +1069,7 @@ async function appSetup() {
         await navigator.serviceWorker.register(workerURL);
     }
     histogramPanel = new HistogramPanel(appRenderer, getEffectStack);
+    metadataPanel = new MetadataPanel();
     const stackHeader = document.getElementById("effectStackHeader")
     const picker = document.createElement("effect-picker")
     stackHeader.appendChild(picker);
@@ -701,11 +1118,12 @@ async function appSetup() {
     setupPDRErrorModal(unlockApp);
     setupHelpModal(lockApp, unlockApp);
     setupOpenFileModal({
-        handleUpload: handleHTMLUpload, handlePdrUpload, lockApp, unlockApp
+        handleUpload: handleHTMLUpload, handlePdrUpload, lockApp, unlockApp,
+        preloadPdr: preloadPDR,
     });
     setupAboutModal(lockApp, unlockApp);
     setupWindow(resizeAndRedraw);
-    await drawPattern('spiral');
+    await showDefaultPattern();
     setupInputStretch();
     renderLoop();
     uiLoop();
