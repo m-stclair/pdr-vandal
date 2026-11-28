@@ -1,4 +1,7 @@
 import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v0.29.3/full/pyodide.mjs";
+// pinned pdr[pillow,fits] and its dependencies; regenerate with
+// tools/pin_pdr_wheels.py (which reads the Pyodide version above)
+import { PDR_PACKAGES } from "./pdr-packages.js";
 
 export let pdrInitializedFlag = false;
 export let pdrInitializingFlag = false;
@@ -8,6 +11,10 @@ let pyodidePromise = null;
 const pyodideLoadOpts = {
     stdout: (msg) => console.log("[py]", msg),
     stderr: (msg) => console.error("[py err]", msg),
+    // Loading the packages here, rather than with micropip afterwards,
+    // downloads them alongside the interpreter and skips micropip's PyPI
+    // lookups: ~1-2 s faster on a first open.
+    packages: PDR_PACKAGES,
 }
 
 export function getPyodide() {
@@ -33,18 +40,23 @@ export function getPyodide() {
 }
 
 
-export async function installPDR() {
+async function fetchPdrview() {
+    const response = await fetch("pdrview.py");
+    if (!response.ok) {
+        throw new Error(`could not fetch pdrview.py: HTTP ${response.status}`);
+    }
+    return response.text();
+}
+
+// The packages are already loaded by getPyodide(); this runs our Python.
+export async function installPDR(pdrviewSource = fetchPdrview()) {
     if (pdrInitializedFlag) return;
     const pyodide = await getPyodide();
-    console.log("preparing micropip...");
-    await pyodide.loadPackage("micropip");
-    // micropip prints its own logs
-    await pyodide.runPythonAsync(`
-        import micropip
-        await micropip.install("pdr[pillow,fits]") 
-    `);
     console.log("prepping local python...");
-    await pyodide.runPythonAsync(await (await fetch("pdrview.py")).text());
+    await pyodide.runPythonAsync(await pdrviewSource);
+    // pdrview imports these lazily; importing them now, during init (which
+    // may be a preload), takes ~0.4 s off the first FITS or desktop image
+    pyodide.runPython("from astropy.io import fits\nfrom PIL import Image");
 }
 
 let pdrInitPromise = null;
@@ -62,8 +74,12 @@ export function initPDR() {
     pdrInitializingFlag = true;
 
     pdrInitPromise = (async () => {
+        // fetch pdrview.py while Pyodide boots; catch it here so a failed
+        // fetch can't reject unobserved if getPyodide() fails first
+        const pdrviewSource = fetchPdrview();
+        pdrviewSource.catch(() => {});
         await getPyodide();
-        await installPDR();
+        await installPDR(pdrviewSource);
         await setUpInterface();
 
         pdrInitializedFlag = true;
@@ -79,6 +95,15 @@ export function initPDR() {
     });
 
     return pdrInitPromise;
+}
+
+// Start initializing in the background, e.g. when the PDR open dialog
+// appears, so the user isn't kept waiting once they pick a file. A failure is
+// only a warning: the real open calls initPDR() again, which retries and
+// reports the error.
+export function preloadPDR() {
+    if (pdrInitializedFlag) return;
+    initPDR().catch((err) => console.warn("PDR preload failed:", err));
 }
 
 const py = {

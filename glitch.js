@@ -44,8 +44,8 @@ import {HistogramPanel} from './components/histogram.js'
 import {MetadataPanel} from './components/metadata.js'
 import {setupOpenFileModal} from './components/openfile.js'
 import {
-    pdrInitializedFlag, initPDR, getPyodide, getProductInfo, getArrayImage, flushPdrCache,
-    getProductLabel
+    pdrInitializedFlag, initPDR, preloadPDR, getPyodide, getProductInfo, getArrayImage,
+    flushPdrCache, getProductLabel
 } from "./pdr.js";
 import {
     bayerWarning, clampGeometry, composeOrientation, cropToRegion, geometrySuffix,
@@ -698,7 +698,7 @@ async function handlePdrUpload(files) {
     lockApp();
     pdrLoadingModal.style.display = "block";
     if (!pdrInitializedFlag) {
-        pdrLoadingModalContent.innerText = "Setting up PDR (wait ~20 seconds)..."
+        pdrLoadingModalContent.innerText = "Setting up PDR..."
     }
     let pyodide = null;
     const backups = new Map();
@@ -1118,7 +1118,8 @@ async function appSetup() {
     setupPDRErrorModal(unlockApp);
     setupHelpModal(lockApp, unlockApp);
     setupOpenFileModal({
-        handleUpload: handleHTMLUpload, handlePdrUpload, lockApp, unlockApp
+        handleUpload: handleHTMLUpload, handlePdrUpload, lockApp, unlockApp,
+        preloadPdr: preloadPDR,
     });
     setupAboutModal(lockApp, unlockApp);
     setupWindow(resizeAndRedraw);

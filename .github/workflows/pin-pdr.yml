@@ -1,0 +1,78 @@
+# Keeps the pdr the site loads current. pdr.js loads pinned wheels
+# (pdr-packages.js) instead of installing the newest pdr with micropip, so
+# this re-pins weekly and opens a PR when anything changed. The test suite
+# runs here against the newly pinned pdr; the PR says whether it passed.
+# (A PR opened with GITHUB_TOKEN doesn't trigger other workflows, so the tests
+# have to run in this one.)
+#
+# Needs: Settings > Actions > General > "Allow GitHub Actions to create and
+# approve pull requests".
+name: Pin pdr wheels
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"  # Mondays, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Re-pin pdr and its PyPI-only dependencies
+        run: |
+          pip install packaging
+          python tools/pin_pdr_wheels.py
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet -- pdr-packages.js; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "pins=$(python tools/pin_pdr_wheels.py --requirements | paste -sd ' ')" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install test dependencies, with the newly pinned pdr
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          python tools/pin_pdr_wheels.py --requirements > pinned.txt
+          pip install -r tests/requirements.txt -r pinned.txt
+          rm pinned.txt
+          playwright install --with-deps chromium
+
+      - name: Run tests
+        id: tests
+        if: steps.diff.outputs.changed == 'true'
+        continue-on-error: true
+        run: |
+          python build.py
+          pytest
+
+      - name: Open or update the PR
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: bot/pin-pdr
+          add-paths: pdr-packages.js
+          commit-message: "Bump pinned pdr wheels: ${{ steps.diff.outputs.pins }}"
+          title: "Bump pinned pdr wheels: ${{ steps.diff.outputs.pins }}"
+          body: |
+            Automated re-pin by `tools/pin_pdr_wheels.py` (`.github/workflows/pin-pdr.yml`).
+
+            New pins: `${{ steps.diff.outputs.pins }}`
+
+            Test suite against the new pins: **${{ steps.tests.outcome == 'success' && 'passed' || 'FAILED, see the workflow run' }}**
+            (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+
+            The browser tests stub out Pyodide, so before merging, open a PDS product on a local server to check that the new pdr loads in the browser.

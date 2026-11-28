@@ -37,7 +37,15 @@ Then open http://localhost:8000/.
   Network tab while developing.
 - Loading PDS products (via [pdr](https://github.com/MillionConcepts/pdr))
   runs in the browser through Pyodide, which is fetched from a CDN, so that
-  feature needs network access.
+  feature needs network access. Pyodide starts loading in the background as
+  soon as the "Open With PDR" dialog opens.
+- The pdr version is pinned: `pdr-packages.js` lists the exact packages
+  Pyodide loads (wheel URLs for those not in Pyodide's distribution), so
+  loading skips micropip. To upgrade pdr, or after changing the Pyodide
+  version in `pdr.js`, run `python tools/pin_pdr_wheels.py` (needs network
+  access and `packaging`) and commit the result. The `Pin pdr wheels` GitHub
+  Action does this weekly: it runs the tests against the new pins and opens
+  a PR.
 
 ## Testing
 

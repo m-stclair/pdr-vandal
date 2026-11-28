@@ -1,8 +1,13 @@
 """
 Open-file dialog: which staged file PDR reads first, where window drops go,
-and that drops stage files (once) without loading anything until "Open".
+that drops stage files (once) without loading anything until "Open", and
+that opening the PDR dialog starts setting up PDR in the background.
 """
+import re
+
 import pytest
+
+from conftest import open_app
 
 OPENFILE = "const O = await import('/components/openfile.js');"
 
@@ -139,3 +144,59 @@ def test_lone_image_window_drop_uses_browser_reader(app):
     """)
     assert not _state(app)["open"]
     assert app.page.text_content("#activeFile") == "pic.png"
+
+
+# Records each loadPyodide() call's package list, then fails like the default
+# stub, so the tests can see when PDR setup starts.
+RECORDING_PYODIDE_STUB = """
+    export async function loadPyodide(opts) {
+        (window.loadPyodideCalls ??= []).push(opts?.packages ?? null);
+        throw new Error('Pyodide is stubbed in tests');
+    }
+"""
+
+
+def _recording_app(browser, server):
+    def before_load(context):
+        context.route("https://cdn.jsdelivr.net/pyodide/**", lambda route: route.fulfill(
+            status=200, content_type="text/javascript", body=RECORDING_PYODIDE_STUB,
+        ))
+    return open_app(browser, server, before_load)
+
+
+def _pyodide_calls(app, count):
+    app.page.wait_for_function(
+        "n => (window.loadPyodideCalls ?? []).length >= n", arg=count, timeout=5000
+    )
+    return app.js("return window.loadPyodideCalls;")
+
+
+def test_pdr_dialog_preloads_pdr(browser, server):
+    app, context, errors = _recording_app(browser, server)
+    try:
+        # nothing is loaded until the user heads for a PDS file
+        assert app.js("return window.loadPyodideCalls ?? [];") == []
+        app.page.click("#open-pdr-dialog")
+        (packages,) = _pyodide_calls(app, 1)
+        # the pinned packages, loaded with the interpreter (no micropip)
+        assert any(re.search(r"/pdr-[^/]+-py3-none-any\.whl$", p) for p in packages)
+        assert "micropip" not in packages
+        # a failed preload is retried the next time the dialog opens
+        app.page.keyboard.press("Escape")
+        app.page.click("#open-pdr-dialog")
+        assert len(_pyodide_calls(app, 2)) == 2
+        # ...and is only a warning, not a console error
+        assert not errors, "\n".join(errors)
+    finally:
+        context.close()
+
+
+def test_window_drop_preloads_pdr(browser, server):
+    app, context, errors = _recording_app(browser, server)
+    try:
+        _drop(app, ["obs.img"])
+        assert _state(app)["open"]
+        assert len(_pyodide_calls(app, 1)) == 1
+        assert not errors, "\n".join(errors)
+    finally:
+        context.close()
